@@ -252,13 +252,21 @@ describe("renderFileList", () => {
 		expect(renderFileList("read", ["a.ts", "b.ts"])).toBe("- read: a.ts, b.ts");
 	});
 
-	it("caps the count and reports exactly how many it dropped", () => {
+	// Which end survives is the whole point: the successor needs what was in flight at exit,
+	// not what the session opened while getting oriented.
+	it("drops the oldest paths and keeps the ones touched last", () => {
 		const paths = Array.from({ length: 50 }, (_, i) => `f${i}.ts`);
 		const line = renderFileList("modified", paths);
 
-		expect(line).toContain("f0.ts");
-		expect(line).not.toContain("f20.ts");
-		expect(line).toContain("(and 30 more)");
+		expect(line).toContain("f49.ts");
+		expect(line).toContain("f30.ts");
+		expect(line).not.toContain("f29.ts");
+		expect(line).toContain("(and 30 earlier omitted)");
+	});
+
+	it("keeps the surviving paths in first-touch order", () => {
+		const line = renderFileList("read", ["a.ts", "b.ts", "c.ts"]);
+		expect(line).toBe("- read: a.ts, b.ts, c.ts");
 	});
 
 	it("caps on characters too, so few-but-enormous paths cannot flood the body", () => {
@@ -266,28 +274,35 @@ describe("renderFileList", () => {
 		const line = renderFileList("read", paths);
 
 		expect(line.length).toBeLessThan(900);
-		expect(line).toMatch(/\(and \d+ more\)$/);
+		expect(line).toContain("f9.ts");
+		expect(line).toMatch(/\(and \d+ earlier omitted\)$/);
 	});
 
-	it("keeps one whole path rather than emitting a count with nothing to show", () => {
-		const paths = ["x".repeat(5000), "b.ts"];
-		const line = renderFileList("read", paths);
+	// The walk stops at the first path that will not fit, so everything older goes with it —
+	// which keeps "earlier omitted" honest rather than reporting a gappy list as contiguous.
+	it("omits a path it cannot show whole rather than emitting a truncated one", () => {
+		const line = renderFileList("read", ["a.ts", "x".repeat(5000)]);
 
-		expect(line.startsWith("- read: xxx")).toBe(true);
-		expect(line).toContain("(and 1 more)");
-		expect(line.length).toBeLessThan(900);
+		expect(line).not.toContain("xxx");
+		expect(line).toBe("- read: 2 paths omitted");
 	});
 
-	it("bounds the section inside a real digest note", () => {
+	it("bounds the section inside a real digest note, keeping the in-flight edits", () => {
 		const reads = Array.from({ length: 400 }, (_, i) => toolCall("read", { path: `src/module-${i}.ts` }));
 		const body =
 			buildDigestNote({
 				...DIGEST_BASE,
-				entries: [user("Audit the tree"), assistant(reads), assistant([{ type: "text", text: "Done." }])],
+				entries: [
+					user("Audit the tree"),
+					assistant(reads),
+					assistant([toolCall("edit", { path: "src/INFLIGHT.ts" })]),
+					assistant([{ type: "text", text: "Done." }]),
+				],
 			})?.body ?? "";
 
-		expect(body).toContain("src/module-0.ts");
-		expect(body).not.toContain("src/module-399.ts");
+		expect(body).toContain("src/INFLIGHT.ts");
+		expect(body).toContain("src/module-399.ts");
+		expect(body).not.toContain("src/module-0.ts");
 		expect(body.length).toBeLessThan(2000);
 	});
 });

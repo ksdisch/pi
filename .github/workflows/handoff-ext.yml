@@ -46,5 +46,14 @@ jobs:
       - name: Test
         run: node node_modules/vitest/dist/cli.js --run --config .pi/extensions/handoff/vitest.config.ts
 
+      # `dist` is not needed, but generated *source* is: `packages/ai/src/providers/data/` is
+      # gitignored, and every `*.models.ts` imports a JSON file from it. Without this the
+      # typecheck below dies with 39 x TS2307 on a fresh checkout — which is what it did on
+      # every run from the day this workflow was added until this step existed. `--ignore-scripts`
+      # above is why nothing generates it implicitly. Re-derives from the tracked `*.models.ts`
+      # in about a second, with no network calls.
+      - name: Hydrate generated model data
+        run: npm run hydrate:model-data
+
       - name: Typecheck
         run: npx tsgo --noEmit -p .pi/extensions/handoff/tsconfig.json
