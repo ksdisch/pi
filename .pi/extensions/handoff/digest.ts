@@ -19,6 +19,14 @@ const USER_EXCERPT_LINES = 15;
 const EXCERPT_CHARS = 2000;
 /** A frontmatter scalar, so held much tighter than the body excerpts. */
 const KICKOFF_CHARS = 200;
+/**
+ * `## Files touched` bounds, for the same reason and on the same two axes. The walk that
+ * feeds this section is unbounded by design (`getBranch()` deliberately does not fold away
+ * pre-compaction history), so a session long enough to have compacted can hand it hundreds
+ * of paths — which would render as one unbroken line in the body the successor reads.
+ */
+const FILES_PER_LIST = 20;
+const FILES_CHARS = 600;
 
 interface TextBlock {
 	type: "text";
@@ -158,10 +166,29 @@ export interface DigestInput {
 	created: string;
 }
 
+/**
+ * One `- <label>: a, b, c` line, capped on count and characters. Paths are taken whole —
+ * a truncated path is worse than an omitted one — so the first path is always kept even if
+ * it alone busts the char budget, and `truncateChars` backstops that one degenerate case.
+ * The `and N more` count is exact: it is derived from what was kept, not estimated.
+ */
+export function renderFileList(label: string, paths: string[]): string {
+	const kept: string[] = [];
+	let chars = 0;
+	for (const path of paths) {
+		if (kept.length > 0 && (kept.length >= FILES_PER_LIST || chars + path.length > FILES_CHARS)) break;
+		chars += path.length + ", ".length;
+		kept.push(path);
+	}
+	const omitted = paths.length - kept.length;
+	const list = truncateChars(kept.join(", "), FILES_CHARS);
+	return omitted > 0 ? `- ${label}: ${list} (and ${omitted} more)` : `- ${label}: ${list}`;
+}
+
 function renderFilesSection(files: FilesTouched): string {
 	const lines: string[] = [];
-	if (files.read.length > 0) lines.push(`- read: ${files.read.join(", ")}`);
-	if (files.modified.length > 0) lines.push(`- modified: ${files.modified.join(", ")}`);
+	if (files.read.length > 0) lines.push(renderFileList("read", files.read));
+	if (files.modified.length > 0) lines.push(renderFileList("modified", files.modified));
 	return lines.length > 0 ? lines.join("\n") : "- none recorded";
 }
 

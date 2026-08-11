@@ -247,6 +247,22 @@ would mean editing `biome.json` — a shared upstream file. Format by hand when 
 `--config-path` pointing at a copy of `biome.json` whose `files.includes` is
 `["**/*.ts", "!**/node_modules/**/*"]`.
 
+### What the unit tests do *not* cover: `index.ts`
+
+`index.ts` is the one module with no test file, and that is a standing decision rather than an
+oversight. It has runtime (non-type) imports from `@earendil-works/pi-ai`, `pi-coding-agent`,
+and `pi-tui`, so importing it from vitest pulls pi's whole module graph into the test process
+and dies on `string_decoder`. Every other module keeps its pi imports type-only precisely so it
+stays importable — `reader-wiring.test.ts` works only because `reader.ts` obeys that rule.
+
+Making `index.ts` testable therefore is not "add a test file"; it means extracting the command
+handler and the shutdown hook into a type-only module first. Accepted for v1: keep `index.ts`
+thin — registration and wiring, with the logic it wires living in the tested modules — and cover
+it by manual smoke run instead (`pi-test.sh -e .pi/extensions/handoff/index.ts`, Gemini free tier).
+The exposure is real and worth naming: the editor round-trip, the successor-spawn confirm, and
+the `mode`-vs-`hasUI` gate are verified by hand or not at all. Anything that grows past wiring
+should move out of `index.ts` rather than being tested in place.
+
 ## Explicitly out of scope for v1 (v2 hooks noted)
 
 - Context-fullness watcher (`ctx.getContextUsage()` checked on `agent_settled`)

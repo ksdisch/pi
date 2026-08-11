@@ -7,6 +7,7 @@ import {
 	hasAssistantMessage,
 	lastAssistantText,
 	lastUserText,
+	renderFileList,
 	truncateChars,
 } from "../digest.ts";
 import { HANDOFF_SCHEMA } from "../notes.ts";
@@ -241,5 +242,52 @@ describe("buildDigestNote", () => {
 		const entries = [user("hi"), assistant([{ type: "text", text: "hello" }])];
 		const note = buildDigestNote({ ...DIGEST_BASE, model: undefined, entries });
 		expect(note?.frontmatter.model).toBeUndefined();
+	});
+});
+
+describe("renderFileList", () => {
+	// The entry walk feeding this is deliberately un-folded (pre-compaction history included),
+	// so it is the section most able to flood the body the successor reads.
+	it("renders a short list whole, with no count suffix", () => {
+		expect(renderFileList("read", ["a.ts", "b.ts"])).toBe("- read: a.ts, b.ts");
+	});
+
+	it("caps the count and reports exactly how many it dropped", () => {
+		const paths = Array.from({ length: 50 }, (_, i) => `f${i}.ts`);
+		const line = renderFileList("modified", paths);
+
+		expect(line).toContain("f0.ts");
+		expect(line).not.toContain("f20.ts");
+		expect(line).toContain("(and 30 more)");
+	});
+
+	it("caps on characters too, so few-but-enormous paths cannot flood the body", () => {
+		const paths = Array.from({ length: 10 }, (_, i) => `${"deep/".repeat(40)}f${i}.ts`);
+		const line = renderFileList("read", paths);
+
+		expect(line.length).toBeLessThan(900);
+		expect(line).toMatch(/\(and \d+ more\)$/);
+	});
+
+	it("keeps one whole path rather than emitting a count with nothing to show", () => {
+		const paths = ["x".repeat(5000), "b.ts"];
+		const line = renderFileList("read", paths);
+
+		expect(line.startsWith("- read: xxx")).toBe(true);
+		expect(line).toContain("(and 1 more)");
+		expect(line.length).toBeLessThan(900);
+	});
+
+	it("bounds the section inside a real digest note", () => {
+		const reads = Array.from({ length: 400 }, (_, i) => toolCall("read", { path: `src/module-${i}.ts` }));
+		const body =
+			buildDigestNote({
+				...DIGEST_BASE,
+				entries: [user("Audit the tree"), assistant(reads), assistant([{ type: "text", text: "Done." }])],
+			})?.body ?? "";
+
+		expect(body).toContain("src/module-0.ts");
+		expect(body).not.toContain("src/module-399.ts");
+		expect(body.length).toBeLessThan(2000);
 	});
 });
