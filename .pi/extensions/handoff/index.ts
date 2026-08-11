@@ -12,6 +12,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { buildDigestNote } from "./digest.ts";
 import { writeNote } from "./notes.ts";
+import { registerReader } from "./reader.ts";
 
 export interface HandoffState {
 	/** Set by `/handoff`. Suppresses the shutdown digest, which would supersede a richer note. */
@@ -55,5 +56,6 @@ function registerShutdownDigest(pi: ExtensionAPI, state: HandoffState): void {
 
 export default function (pi: ExtensionAPI) {
 	const state: HandoffState = { wroteNoteThisSession: false };
+	registerReader(pi);
 	registerShutdownDigest(pi, state);
 }
