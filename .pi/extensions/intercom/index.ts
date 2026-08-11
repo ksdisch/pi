@@ -15,7 +15,7 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatIncoming } from "./format.ts";
+import { deliveredCount, formatIncoming } from "./format.ts";
 import {
 	clearChannel,
 	collectNew,
@@ -61,6 +61,11 @@ function normalizeChannel(raw: string): string | undefined {
 	return isValidChannel(name) ? name : undefined;
 }
 
+/** Nonce for one delivery's fence — unpredictable to message bodies (see format.ts). */
+function newBatchId(): string {
+	return Math.random().toString(36).slice(2, 10);
+}
+
 function join(state: IntercomState, channel: string, alias?: string): ChannelState {
 	let entry = state.joined.get(channel);
 	if (!entry) {
@@ -88,6 +93,7 @@ function tick(pi: ExtensionAPI, state: IntercomState): void {
 					content: formatIncoming(
 						channel,
 						collected.delivered.map((item) => item.message),
+						newBatchId(),
 					),
 					display: true,
 				},
@@ -227,10 +233,12 @@ function registerTools(pi: ExtensionAPI, state: IntercomState): void {
 									text: formatIncoming(
 										channel,
 										collected.delivered.map((item) => item.message),
+										newBatchId(),
 									),
 								},
 							],
-							details: { channel, count: collected.delivered.length },
+							// deliveredCount, not raw length: the text renders at most that many.
+							details: { channel, count: deliveredCount(collected.delivered.length) },
 						};
 					}
 					if (signal?.aborted) throw new Error("Wait cancelled.");

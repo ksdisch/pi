@@ -3,8 +3,10 @@
  *
  * Messages live in `<cwd>/.pi/intercom/<channel>/`, one JSON file per message, so two
  * sessions writing concurrently can never interleave bytes. Filenames are
- * timestamp-prefixed, so lexicographic order is delivery order and a plain string
- * cursor ("last filename seen") is all a reader needs to resume.
+ * timestamp-prefixed, so lexicographic order approximates delivery order — but a
+ * reader's resume state is a *set* of seen filenames, never a newest-name watermark:
+ * a file becomes visible at rename time, later than its name claims, and a watermark
+ * would skip such a late arrival forever (see `collectNew`).
  *
  * Pure + `node:fs` only. No pi imports, so this module is trivially unit-testable.
  * The clock is always passed in (`created`), never read here.

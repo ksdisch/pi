@@ -33,7 +33,7 @@ not couple to it.
 ```
 <cwd>/.pi/intercom/
   <channel>/                                  one directory per channel
-    2026-08-11T10-00-00-000Z_019feda9_0000.json   one file per message
+    2026-08-11T10-00-00-000Z_3f430270_000000.json   one file per message
 ```
 
 - Filename = sanitized ISO timestamp + *last* 8 chars of sender session id (the uuidv7
@@ -110,10 +110,12 @@ turn, so any process with write access to the project directory (build scripts, 
 lifecycle hooks, tools the agent itself runs) could speak on a joined channel. That
 is the feature's nature, not an oversight — the normal peers are the same user's own
 sessions. Mitigations in place: aliases cannot span lines or exceed 32 chars (no
-banner forgery), the injection ends with an explicit closing fence, and nothing is
-delivered from channels a session hasn't joined. Not mitigated: a message body is
-peer-written free text and the receiving model will read it as conversation. Do not
-join channels in untrusted working directories.
+banner forgery), each delivery's banner and closing fence carry a caller-generated
+nonce a message body cannot predict (so a body cannot pose as the end of the batch
+plus further traffic), and nothing is delivered from channels a session hasn't
+joined. Not mitigated: a message body is peer-written free text — it can still fake
+`From …:` blocks *inside* its batch, and the receiving model will read it as
+conversation. Do not join channels in untrusted working directories.
 
 ## Known limits (accepted for v1)
 
@@ -129,8 +131,8 @@ join channels in untrusted working directories.
 ## Verification
 
 - `store.ts` and `format.ts` have no pi imports and are covered by unit tests
-  (round-trip, cursor semantics, corrupt-file skip, clear, git-exclude idempotence,
-  rendered text).
+  (round-trip, seen-set semantics including late out-of-order arrivals, corrupt-file
+  skip, clear, git-exclude idempotence, rendered text).
 - `index.ts` (tool/command/watcher wiring) is exercised interactively; it contains no
   logic beyond wiring that isn't already under test. Same trade the handoff
   extension's DESIGN.md documents for its `index.ts`.

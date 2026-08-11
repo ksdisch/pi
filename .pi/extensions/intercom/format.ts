@@ -21,19 +21,28 @@ export function senderLabel(message: IntercomMessage): string {
 	return message.alias ? `${message.alias} (${short})` : short;
 }
 
+/** How many messages one injection can carry; exported so callers report it honestly. */
+export function deliveredCount(total: number): number {
+	return Math.min(total, MAX_MESSAGES);
+}
+
 /**
  * The banner line is first and stands alone: the TUI renderer splits it off for
- * highlighting, mirroring the handoff memo's layout. The closing line bounds the
- * injection, so a message body cannot pose as further intercom traffic — bodies are
- * peer-written text and get no other fencing (peers are normally the same user's own
- * agents; DESIGN.md covers the trust boundary).
+ * highlighting, mirroring the handoff memo's layout.
+ *
+ * `batchId` is a caller-generated nonce carried by both the banner and the closing
+ * fence. Bodies are peer-written text interpolated verbatim, so a body could
+ * reproduce a *static* closing line and forge messages after it — but it cannot
+ * predict the nonce, so the matching-fence line is the one true end of the batch.
+ * Forged `From …:` blocks *inside* a batch remain possible; that residual is
+ * DESIGN.md's documented trust boundary, not something a format can fix.
  */
-export function formatIncoming(channel: string, messages: IntercomMessage[]): string {
+export function formatIncoming(channel: string, messages: IntercomMessage[], batchId: string): string {
 	const kept = messages.slice(-MAX_MESSAGES);
 	const omitted = messages.length - kept.length;
 
 	const plural = kept.length === 1 ? "message" : "messages";
-	const lines = [`Intercom #${channel} — ${kept.length} new ${plural}`];
+	const lines = [`Intercom #${channel} — ${kept.length} new ${plural} [batch ${batchId}]`];
 	if (omitted > 0) {
 		lines.push("", `(${omitted} older unread message${omitted === 1 ? "" : "s"} omitted; full history is in .pi/intercom/${channel}/)`);
 	}
@@ -42,6 +51,6 @@ export function formatIncoming(channel: string, messages: IntercomMessage[]): st
 		const body = text.length > PER_MESSAGE_CHARS ? `${text.slice(0, PER_MESSAGE_CHARS)}…` : text;
 		lines.push("", `From ${senderLabel(message)} at ${message.created}:`, body);
 	}
-	lines.push("", `(end of intercom #${channel} traffic)`);
+	lines.push("", `(end of intercom #${channel} traffic [batch ${batchId}])`);
 	return lines.join("\n");
 }
