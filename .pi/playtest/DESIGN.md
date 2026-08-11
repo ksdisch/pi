@@ -47,7 +47,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
 | `POST /state` | Compact `getState()` snapshot |
-| `POST /move {...}` | One maneuver: timed left/right/hop, optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns before/after x/y, respawn delta, `won`, sfx/burst events |
+| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns before/after x/y, respawn delta, `won`, sfx events |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
 
@@ -62,16 +62,18 @@ the partner — that's a solo-verification affordance, not a co-op one.)
 |---|---|
 | `POST /join {code}` | Open phone.html, enter code, return spellbook summary |
 | `POST /read` | Which screen + visible text (phase, powers, stardust, errors) |
-| `POST /puzzle {power}` | Tap the power, return the puzzle's content (question, choices, grid) |
-| `POST /answer {value}` | Submit the LLM's answer (QuickMath number, Trivia choice); report solved/failed + cast confirmation |
-| `POST /auto {power}` | Mechanical puzzles only (TapSequence now; PhaseAlign later): driver performs the taps, reports what it took (duration, attempts) |
+| `POST /solve {power}` | Tap the power, run the whole puzzle in-page, return a transcript (problems seen, answers given, tap sequence observed, duration, retries) |
 | `POST /screenshot` / `POST /shutdown` | as above |
 
-**Honesty split:** cognitive puzzles (math, trivia) are answered by the phone
-*player* — the driver only transcribes. Reflex/timing puzzles are executed by the
-driver because a 5-rpm LLM physically can't tap an 800ms window; the driver
-reports the mechanics so the player can still critique them. The report must
-label which was which.
+**Honesty split:** the phone *player* owns strategy — which power, when, and why —
+and critiques from the transcript. The driver owns puzzle *mechanics*, all of
+them, because the puzzles are human-paced: QuickMath and Trivia give 30s for 3
+items, and a free-tier LLM turn costs ~12s+ — no in-puzzle LLM round-trip can
+fit even once. (That mismatch is itself a playtest data point: these puzzles are
+tuned for thumbs, not tokens.) Trivia answers come from the question pool the
+page itself serves (`import('/src/.../triviaLogic.ts')` via the Vite dev
+server — still zero-diff); QuickMath is computed; TapSequence is observed from
+the demo flashes and repeated. The report must label driver-mechanics as such.
 
 ## Rate-limit strategy
 
@@ -117,9 +119,15 @@ final critique for Kyle; players only report their own seat's experience.
 
 ## Verification plan
 
-1. **Rails first, no LLM:** drive a full two-client planet-1 clear by hand with
-   curl (boot → code → join → planet → freeze/platform/illuminate via real
-   puzzle solves → `won:true`). Proves drivers + pairing + honesty rules.
+1. **Rails first, no LLM** — DONE (2026-08-11): `verify-rails.sh` drives a full
+   two-client planet-1 clear through both drivers (boot → ws-sniffed room code →
+   join → all three puzzle executors solving for real → `won:true`,
+   `completed['planet-1']:true`, planet-2 unlocked). Lessons folded back into
+   the drivers and prompts: `/solve` returns the instant the cast lands (a 1.2s
+   feedback wait ate a third of the freeze window), `/move` grew `jumpAtX`
+   (fixed-cadence hops kept landing 10px short of the far ledge), and parking
+   mid-level between turns is lethal (sentry patrol), which the laptop prompt
+   now teaches as technique without leaking the level layout.
 2. **Then the pilot:** run `run-pilot.sh`, two live sessions, one planet.
 3. Keep `reports/` + driver logs as run artifacts (git-ignored except the pilot
    report Kyle gets).
