@@ -102,8 +102,13 @@ CLEANUP_SESSIONS=0
 on_exit() {
 	if ((CLEANUP_SESSIONS)); then
 		CLEANUP_SESSIONS=0
-		[[ -n ${LAPTOP_PID:-} ]] && kill -- -"$LAPTOP_PID" 2>/dev/null
-		[[ -n ${PHONE_PID:-} ]] && kill -- -"$PHONE_PID" 2>/dev/null
+		# `|| true` on each kill, in an `if` rather than an `&&` chain: `kill` on an
+		# already-exited process group returns 1, and under `set -e` a failure after
+		# the final `&&` aborts the handler. The two players finish independently, so
+		# "one already gone" is the normal state — without this, reaping the finished
+		# session strands the live one AND skips driver cleanup entirely.
+		if [[ -n ${LAPTOP_PID:-} ]]; then kill -- -"$LAPTOP_PID" 2>/dev/null || true; fi
+		if [[ -n ${PHONE_PID:-} ]]; then kill -- -"$PHONE_PID" 2>/dev/null || true; fi
 	fi
 	if ((CLEANUP_DRIVERS)); then
 		CLEANUP_DRIVERS=0
