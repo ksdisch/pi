@@ -12,13 +12,13 @@ Drive the game ONLY through this local HTTP API, via bash curl. One call does a
 whole maneuver — never busy-loop.
 
 - Boot the game (returns the room code your partner needs):
-  `curl -s -m 40 -X POST http://127.0.0.1:4801/boot`
+  `curl -s -m 40 -X POST http://127.0.0.1:__LAPTOP_PORT__/boot`
 - Wait until your partner's phone has joined (blocks, be patient):
-  `curl -s -m 250 -X POST http://127.0.0.1:4801/await-phone`
-- Enter the planet: `curl -s -m 30 -X POST http://127.0.0.1:4801/planet -d '{"id":"planet-1"}'`
-- Look at the world: `curl -s -m 30 -X POST http://127.0.0.1:4801/state`
+  `curl -s -m 250 -X POST http://127.0.0.1:__LAPTOP_PORT__/await-phone`
+- Enter the planet: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/planet -d '{"id":"planet-1"}'`
+- Look at the world: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/state`
 - Move (ONE maneuver per call; stops early on death/win/reached-x):
-  `curl -s -m 40 -X POST http://127.0.0.1:4801/move -d '{"dir":"right","ms":2500,"hop":true}'`
+  `curl -s -m 40 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"dir":"right","ms":2500,"hop":true}'`
   Options: `dir` = "right"|"left"|"none", `ms` up to 15000, `hop` true =
   bunny-hop on a timer while moving, `jumpAtX` = jump exactly ONCE when your x
   crosses that value (the way a human takes a gap: one deliberate jump at the
@@ -41,7 +41,7 @@ whole maneuver — never busy-loop.
 - y ≈ 476 is standing on the main ground. `respawnCount` going up = a death;
   compare x before/after to learn where the danger was.
 - Screenshot (for the human's report — you can't see it):
-  `curl -s -m 30 -X POST http://127.0.0.1:4801/screenshot -d '{"name":"sentry"}'`
+  `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/screenshot -d '{"name":"sentry"}'`
 
 Key state fields: `x`/`y` (position; x grows rightward), `respawnCount` (deaths),
 `won`, `enemyFrozen`, `platformCount` (a summoned platform exists — they expire
@@ -83,7 +83,7 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
 ## Rules
 
 - Never read the game's source code and never touch files except your notes and
-  report. Never call ports other than 4801. Don't run the game yourself.
+  report. Never call ports other than __LAPTOP_PORT__. Don't run the game yourself.
 - After each phase (boot/pairing, first deaths, each power, the clear), append
   1-3 observation lines: `echo "..." >> __DIR__/reports/__RUNID__-laptop-notes.md`
 - Budget: aim for under ~25 driver calls and under ~20 intercom messages total.

@@ -1,7 +1,21 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
-import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
+import {
+	extractServerRetryDelayMs,
+	isRetryableAssistantError,
+	MAX_SERVER_RETRY_DELAY_MS,
+	type RetryPolicy,
+	retryAssistantCall,
+} from "../src/utils/retry.ts";
 import googleFreeTier429 from "./fixtures/google-free-tier-429.json" with { type: "json" };
+
+// The json-content-type branch of @google/genai does `JSON.stringify(await
+// response.json())` on the same body the text branch double-stringifies, so it
+// is derived from the captured fixture rather than hand-typed — a hand-spaced
+// copy would claim byte-fidelity to a wire shape it does not have.
+const perMinuteRequestsJsonShape = JSON.stringify(
+	JSON.parse(JSON.parse(googleFreeTier429.perMinuteRequestsRaw).error.message),
+);
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -95,7 +109,7 @@ describe("provider retry classification", () => {
 			isRetryableAssistantError(
 				fauxAssistantMessage("", {
 					stopReason: "error",
-					errorMessage: googleFreeTier429.perMinuteRequestsJsonShape,
+					errorMessage: perMinuteRequestsJsonShape,
 				}),
 			),
 		).toBe(true);
@@ -170,6 +184,41 @@ describe("provider retry classification", () => {
 			),
 		).toBe(true);
 		expect(isRetryableAssistantError(fauxAssistantMessage("not an error"))).toBe(false);
+	});
+});
+
+describe("extractServerRetryDelayMs", () => {
+	it("reads the full-precision delay out of a real captured per-minute 429", () => {
+		// RetryInfo says "25s"; the prose says 25.309369594s. The longer one wins,
+		// so the caller never wakes up inside the window Google stated.
+		expect(extractServerRetryDelayMs(googleFreeTier429.perMinuteRequestsRaw)).toBe(26_310);
+	});
+
+	it("reads the same delay from the json-content-type shape of that body", () => {
+		expect(extractServerRetryDelayMs(perMinuteRequestsJsonShape)).toBe(26_310);
+	});
+
+	it("outlasts the shipped default ladder on that body", () => {
+		// The regression F12 named: 2s/4s/8s puts the last attempt at t=14s, all
+		// three inside a 25.3s throttle window.
+		const delay = extractServerRetryDelayMs(googleFreeTier429.perMinuteRequestsRaw);
+		expect(delay).toBeGreaterThan(2_000 + 4_000 + 8_000);
+	});
+
+	it("reads sub-second and whole-second delays from the other captured bodies", () => {
+		expect(extractServerRetryDelayMs(googleFreeTier429.perMinuteInputTokensRaw)).toBe(2_518);
+		expect(extractServerRetryDelayMs(googleFreeTier429.perDayRequestsRaw)).toBe(18_961);
+	});
+
+	it("returns undefined when the error states no delay", () => {
+		expect(extractServerRetryDelayMs(undefined)).toBeUndefined();
+		expect(extractServerRetryDelayMs("")).toBeUndefined();
+		expect(extractServerRetryDelayMs("overloaded_error")).toBeUndefined();
+		expect(extractServerRetryDelayMs('{"retryDelay": "0s"}')).toBeUndefined();
+	});
+
+	it("clamps an implausible delay so a bad value cannot stall a turn", () => {
+		expect(extractServerRetryDelayMs('{"retryDelay": "86400s"}')).toBe(MAX_SERVER_RETRY_DELAY_MS);
 	});
 });
 

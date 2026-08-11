@@ -2,11 +2,12 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { startServer, waitFor } from "./common.mjs";
+import { closeForVideo, contextOptions, launchOptions, saveVideo, startServer, waitFor } from "./common.mjs";
 
 const HARNESS_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PHONE_URL = process.env.PHONE_URL ?? "http://localhost:5180/phone.html";
 const PORT = Number(process.env.PHONE_DRIVER_PORT ?? 4802);
+const VIEWPORT = { width: 390, height: 720 };
 
 const POWER_LABELS = {
 	"freeze-stars": "Freeze Stars",
@@ -256,8 +257,8 @@ const routes = {
 		// every later /join trips over.
 		if (!page) {
 			try {
-				browser ??= await chromium.launch({ headless: true });
-				const ctx = await browser.newContext({ viewport: { width: 390, height: 720 } });
+				browser ??= await chromium.launch(launchOptions());
+				const ctx = await browser.newContext(contextOptions(VIEWPORT));
 				page = await ctx.newPage();
 			} catch (err) {
 				await browser?.close().catch(() => {});
@@ -310,9 +311,12 @@ const routes = {
 	},
 
 	"/shutdown": async () => {
+		const video = page?.video() ?? null;
+		await closeForVideo(page);
+		const videoFile = await saveVideo(video, "phone");
 		await browser?.close().catch(() => {});
 		setTimeout(() => process.exit(0), 250);
-		return { ok: true, note: "phone driver exiting" };
+		return { ok: true, videoFile, note: "phone driver exiting" };
 	},
 };
 

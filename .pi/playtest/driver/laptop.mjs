@@ -2,11 +2,18 @@ import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
-import { sleep, startServer, waitFor } from "./common.mjs";
+import { closeForVideo, contextOptions, launchOptions, saveVideo, sleep, startServer, waitFor } from "./common.mjs";
 
 const HARNESS_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const GAME_URL = process.env.GAME_URL ?? "http://localhost:5180/?test=1";
 const PORT = Number(process.env.LAPTOP_DRIVER_PORT ?? 4801);
+const VIEWPORT = { width: 960, height: 600 };
+/**
+ * Ceiling on a single maneuver, independent of what the caller asks for. The
+ * driver runs one command at a time (common.mjs serializes them), so an
+ * over-long /move blocks every later command including /shutdown.
+ */
+const MOVE_HARD_CAP_MS = 15_000;
 
 let browser = null;
 let page = null;
@@ -44,8 +51,8 @@ const routes = {
 		// the caller retry /boot instead of wedging on "already booted".
 		if (booted) return { roomCode, phoneJoined, note: "already booted" };
 		try {
-			browser = await chromium.launch({ headless: true });
-			const ctx = await browser.newContext({ viewport: { width: 960, height: 600 } });
+			browser = await chromium.launch(launchOptions());
+			const ctx = await browser.newContext(contextOptions(VIEWPORT));
 			page = await ctx.newPage();
 			// The room code lands in a `room-created` websocket frame (and on the
 			// Phaser canvas, where no DOM reader can see it) — hook the frames.
@@ -104,10 +111,18 @@ const routes = {
 	 * crossing that x (how a human takes a gap: jump at the lip, not on a timer).
 	 * Stops on: won, a respawn (death), reaching untilX, or ms elapsed.
 	 */
-	"/move": async ({ dir = "none", ms = 2_000, hop = false, jumpAtX = null, untilX = null, maxMs = 15_000 } = {}) => {
+	"/move": async ({
+		dir = "none",
+		ms = 2_000,
+		hop = false,
+		jumpAtX = null,
+		untilX = null,
+		maxMs = MOVE_HARD_CAP_MS,
+	} = {}) => {
 		const p = requireBooted();
 		if (!["right", "left", "none"].includes(dir)) throw new Error(`bad dir "${dir}"`);
-		const budget = Math.min(Number(ms) || 0, maxMs);
+		// `maxMs` is caller-supplied, so it can only tighten the cap, never raise it.
+		const budget = Math.min(Number(ms) || 0, Number(maxMs) || MOVE_HARD_CAP_MS, MOVE_HARD_CAP_MS);
 		const result = await p.evaluate(
 			async (opts) => {
 				const b = window.__constellation;
@@ -189,9 +204,12 @@ const routes = {
 	},
 
 	"/shutdown": async () => {
+		const video = page?.video() ?? null;
+		await closeForVideo(page);
+		const videoFile = await saveVideo(video, "laptop");
 		await browser?.close().catch(() => {});
 		setTimeout(() => process.exit(0), 250);
-		return { ok: true, note: "laptop driver exiting" };
+		return { ok: true, videoFile, note: "laptop driver exiting" };
 	},
 };
 

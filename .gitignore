@@ -41,4 +41,7 @@ todo.md
 plans/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
+# pi rewrites its own project settings (SettingsManager enqueueWrite("project", …)),
+# so tracking this file just turns ordinary sessions into unrelated `git status` dirt.
+.pi/settings.json
 collect.sh
