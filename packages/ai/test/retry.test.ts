@@ -226,6 +226,23 @@ describe("retryAssistantCall", () => {
 	const disabled: RetryPolicy = { enabled: false, maxRetries: 3, baseDelayMs: 0 };
 	const enabled: RetryPolicy = { enabled: true, maxRetries: 3, baseDelayMs: 0 };
 
+	it("floors the scheduled backoff at the delay the provider stated", async () => {
+		// This loop backs compaction and is exported SDK surface, so it needs the
+		// same floor as coding-agent's `_prepareRetry` — pinned here so the two
+		// ladders cannot drift apart again. baseDelayMs is 0, so the whole delay is
+		// the floor; the abort keeps the test from actually sleeping 26s.
+		const controller = new AbortController();
+		const onRetryScheduled = vi.fn(() => controller.abort());
+		const produce = vi.fn(async () =>
+			fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteRequestsRaw }),
+		);
+
+		const res = await retryAssistantCall(produce, enabled, controller.signal, { onRetryScheduled });
+
+		expect(onRetryScheduled).toHaveBeenCalledWith(1, 3, 26_310, expect.any(String));
+		expect(res.stopReason).toBe("aborted");
+	});
+
 	it("returns a successful response immediately without retrying", async () => {
 		const produce = vi.fn(async () => fauxAssistantMessage("ok"));
 		const res = await retryAssistantCall(produce, enabled, undefined);

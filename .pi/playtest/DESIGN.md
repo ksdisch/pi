@@ -118,15 +118,21 @@ the demo flashes and repeated. The report must label driver-mechanics as such.
 5. Babysit with a hard timeout (default 25 min); kill + report on overrun.
 6. Collect `reports/<RUNID>-laptop.md` + `reports/<RUNID>-phone.md`.
 
-Ports are single-sourced: `LAPTOP_DRIVER_PORT`/`PHONE_DRIVER_PORT` (plus
-`GAME_PORT`/`RELAY_PORT`) are read by the orchestrator, exported to the drivers,
-and substituted into the rendered prompts, so one override moves every side.
+Ports are single-sourced. `LAPTOP_DRIVER_PORT`/`PHONE_DRIVER_PORT` are read by
+the orchestrator, exported to the drivers, and substituted into the rendered
+prompts. `GAME_PORT` reaches the drivers as the `GAME_URL`/`PHONE_URL` the
+orchestrator derives from it and exports — the drivers navigate by URL, so
+exporting the bare port would health-check one server while Chromium opened
+another. So one override moves every side.
 
 Everything the script backgrounds gets its own process group (`set -m`), and
 teardown kills the group — `npm run dev` is a wrapper around vite and the relay,
 and each player pid is a subshell with pi inside it, so a plain `kill` reaches
-neither. Driver cleanup runs from an `EXIT`/`INT`/`TERM` trap, not only off the
-happy path, and `./run-pilot.sh teardown` additionally reaps :5180/:3081 by port.
+neither. Driver cleanup runs from an `EXIT`/`INT`/`TERM` trap armed as soon as
+the drivers are up, so the preflight's own `exit 1` on a spent daily quota — the
+expected bail-out — cleans up too. `./run-pilot.sh teardown` additionally reaps
+:5180/:3081 by port, but only when `logs/dev.pid` records that this script
+started the server; a dev server you started by hand is left alone.
 
 ### Watching a run
 
@@ -135,7 +141,10 @@ happy path, and `./run-pilot.sh teardown` additionally reaps :5180/:3081 by port
   players can perceive.
 - Every run records video to `reports/video/<RUNID>/{laptop,phone}.webm`
   regardless of `HEADED`. Playwright only finalizes those files when the context
-  closes, so they appear at `/shutdown` — i.e. when the run ends.
+  closes, so they appear at `/shutdown` — i.e. when the run ends. That flush
+  happens before the driver answers, so the orchestrator gives `/shutdown` a
+  `SHUTDOWN_TIMEOUT_S` (90s) budget rather than a ping-sized one, and prints the
+  path each driver reports saving instead of asserting the directory has files.
 
 The claude session that ran the pilot synthesizes the two player reports into the
 final critique for Kyle; players only report their own seat's experience.

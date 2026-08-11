@@ -212,7 +212,14 @@ export async function retryAssistantCall(
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = policy!.baseDelayMs * 2 ** (attempt - 1);
+		// Same floor as the agent-turn loop in coding-agent's `_prepareRetry`: this
+		// loop shares its policy and its classifier, so an unfloored ladder here
+		// would still burn every compaction retry inside a throttle window the
+		// provider already told us to wait out.
+		const delayMs = Math.max(
+			policy!.baseDelayMs * 2 ** (attempt - 1),
+			extractServerRetryDelayMs(response.errorMessage) ?? 0,
+		);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as

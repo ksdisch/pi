@@ -22,7 +22,14 @@ LAPTOP_DRIVER_PORT="${LAPTOP_DRIVER_PORT:-4801}"
 PHONE_DRIVER_PORT="${PHONE_DRIVER_PORT:-4802}"
 GAME_PORT="${GAME_PORT:-5180}"
 RELAY_PORT="${RELAY_PORT:-3081}"
+# The drivers navigate by URL, not port, so GAME_PORT has to reach them as one —
+# otherwise the script health-checks one server while Chromium opens another.
+export GAME_URL="${GAME_URL:-http://localhost:$GAME_PORT/?test=1}"
+export PHONE_URL="${PHONE_URL:-http://localhost:$GAME_PORT/phone.html}"
 export LAPTOP_DRIVER_PORT PHONE_DRIVER_PORT
+# /shutdown finalizes and copies the run's video before it answers, so this has
+# to bound a whole recording rather than a ping.
+SHUTDOWN_TIMEOUT_S="${SHUTDOWN_TIMEOUT_S:-90}"
 L="http://127.0.0.1:$LAPTOP_DRIVER_PORT"
 P="http://127.0.0.1:$PHONE_DRIVER_PORT"
 MODE="${1:-pilot}"
@@ -56,12 +63,20 @@ stop_port() {
 	[[ -n $pids ]] && kill $pids 2>/dev/null || true
 }
 
+# Report what each driver said it saved. A driver that never opened a page has
+# no video and says so with a null — only the end-of-run check (step 7) knows
+# whether one was actually expected, so this reports and does not judge.
 stop_drivers() {
-	curl -s -m 5 -X POST "$L/shutdown" >/dev/null 2>&1 || true
-	curl -s -m 5 -X POST "$P/shutdown" >/dev/null 2>&1 || true
+	local url out file
+	for url in "$L" "$P"; do
+		out="$(curl -s -m "$SHUTDOWN_TIMEOUT_S" -X POST "$url/shutdown" 2>/dev/null || true)"
+		file="$(printf '%s' "$out" | sed -n 's/.*"videoFile":"\([^"]*\)".*/\1/p')"
+		[[ -n $file ]] && echo "  video saved: $file"
+	done
 	sleep 1
 	stop_pidfile "$DIR/logs/laptop-driver.pid"
 	stop_pidfile "$DIR/logs/phone-driver.pid"
+	return 0
 }
 
 if [[ $MODE == teardown ]]; then
@@ -77,14 +92,24 @@ if [[ $MODE == teardown ]]; then
 	exit 0
 fi
 
-# Drivers are cleaned up even when the run is interrupted — step 7 only runs on
-# the happy path, and a Ctrl-C otherwise leaves both wedged for the next run.
-CLEANUP_ARMED=0
+# Cleanup on every exit path, not just the happy one — a Ctrl-C, or the
+# preflight's own `exit 1` when a model's daily quota is spent, would otherwise
+# leave two drivers and their Chromium instances holding :4801/:4802. The two
+# flags are separate because the drivers outlive the sessions in `drivers` mode,
+# and because the drivers are up long before there are any sessions to kill.
+CLEANUP_DRIVERS=0
+CLEANUP_SESSIONS=0
 on_exit() {
-	((CLEANUP_ARMED)) || return 0
-	CLEANUP_ARMED=0
-	kill -- -"$LAPTOP_PID" -"$PHONE_PID" 2>/dev/null || true
-	stop_drivers
+	if ((CLEANUP_SESSIONS)); then
+		CLEANUP_SESSIONS=0
+		[[ -n ${LAPTOP_PID:-} ]] && kill -- -"$LAPTOP_PID" 2>/dev/null
+		[[ -n ${PHONE_PID:-} ]] && kill -- -"$PHONE_PID" 2>/dev/null
+	fi
+	if ((CLEANUP_DRIVERS)); then
+		CLEANUP_DRIVERS=0
+		stop_drivers
+	fi
+	return 0
 }
 trap on_exit EXIT INT TERM
 
@@ -128,6 +153,7 @@ mkdir -p "$VIDEO_DIR"
 stop_drivers
 spawn_service "$DIR/logs/laptop-driver.pid" "$DIR/logs/laptop-driver.log" node "$DIR/driver/laptop.mjs"
 spawn_service "$DIR/logs/phone-driver.pid" "$DIR/logs/phone-driver.log" node "$DIR/driver/phone.mjs"
+CLEANUP_DRIVERS=1
 wait_http "$L/health" 30
 wait_http "$P/health" 30
 echo "drivers up (laptop :$LAPTOP_DRIVER_PORT, phone :$PHONE_DRIVER_PORT)"
@@ -138,6 +164,8 @@ if [[ ${HEADED:-} == 1 ]]; then
 fi
 
 if [[ $MODE == drivers ]]; then
+	# The whole point of this mode is to leave the drivers up for rails testing.
+	CLEANUP_DRIVERS=0
 	echo "drivers-only mode — leaving everything running"
 	exit 0
 fi
@@ -174,7 +202,7 @@ LAPTOP_PID=$!
 (cd "$PI_ROOT" && ./pi-test.sh -p -nc -a --model "$PHONE_MODEL" -n "playtest-phone-$RUNID" \
 	"$(cat "$DIR/logs/$RUNID-prompt-phone.txt")" </dev/null >"$DIR/logs/$RUNID-session-phone.log" 2>&1) &
 PHONE_PID=$!
-CLEANUP_ARMED=1
+CLEANUP_SESSIONS=1
 
 deadline=$((SECONDS + PILOT_TIMEOUT_S))
 while kill -0 "$LAPTOP_PID" 2>/dev/null || kill -0 "$PHONE_PID" 2>/dev/null; do
@@ -190,11 +218,21 @@ wait "$LAPTOP_PID" 2>/dev/null || true
 wait "$PHONE_PID" 2>/dev/null || true
 
 # 7. teardown drivers (keep the dev server; teardown mode stops it). Shutting
-# them down is also what flushes the recorded video to disk.
-CLEANUP_ARMED=0
+# them down is also what flushes the recorded video to disk, so `stop_drivers`
+# prints the file each one actually wrote.
+CLEANUP_SESSIONS=0
+CLEANUP_DRIVERS=0
+echo "stopping drivers (this also flushes the recordings)..."
 stop_drivers
 
 echo
 echo "run $RUNID finished. reports:"
 ls -la "$DIR/reports" 2>/dev/null | grep "$RUNID" || echo "  (none written — check logs/$RUNID-session-*.log)"
-echo "video: $VIDEO_DIR"
+# A run that played reached /boot and /join, so both recordings are expected —
+# say so plainly when one is missing rather than pointing at an empty directory.
+if compgen -G "$VIDEO_DIR/*.webm" >/dev/null; then
+	echo "video:"
+	ls -1 "$VIDEO_DIR"/*.webm | sed 's/^/  /'
+else
+	echo "WARNING: no video written to $VIDEO_DIR — check logs/*-driver.log" >&2
+fi
