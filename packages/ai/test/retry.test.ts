@@ -92,6 +92,31 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
+	it("keeps Google token-rate per-minute quotas non-retryable (context cannot shrink)", () => {
+		const tokenRate429 =
+			'429 Too Many Requests: You exceeded your current quota. Quota exceeded for metric: generate_content_free_tier_input_token_count. "quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: tokenRate429 })),
+		).toBe(false);
+	});
+
+	it("lets a per-day violation outrank a co-occurring per-minute throttle", () => {
+		const combined429 =
+			'429 quota exceeded. violations: ["GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "GenerateRequestsPerDayPerProjectPerModel-FreeTier"]';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: combined429 })),
+		).toBe(false);
+	});
+
+	it("lets a hard account-limit marker outrank a co-occurring per-minute throttle", () => {
+		for (const errorMessage of [
+			'insufficient_quota: You exceeded your current quota ("GenerateRequestsPerMinutePerProjectPerModel-FreeTier")',
+			"GoUsageLimitError: Monthly usage limit reached; PerMinute burst also throttled",
+		]) {
+			expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+		}
+	});
+
 	it("classifies assistant error messages", () => {
 		expect(
 			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })),

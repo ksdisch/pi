@@ -251,10 +251,20 @@ const runTapSequence = () =>
 const routes = {
 	"/join": async ({ code } = {}) => {
 		if (!code || !/^[A-Za-z]{6}$/.test(code)) throw new Error(`bad room code ${JSON.stringify(code)} — expected 6 letters`);
-		if (!browser) {
-			browser = await chromium.launch({ headless: true });
-			const ctx = await browser.newContext({ viewport: { width: 390, height: 720 } });
-			page = await ctx.newPage();
+		// Guard on `page` (not `browser`) and tear down on failure, so a crash
+		// between launch and newPage can't leave a browser without a page that
+		// every later /join trips over.
+		if (!page) {
+			try {
+				browser ??= await chromium.launch({ headless: true });
+				const ctx = await browser.newContext({ viewport: { width: 390, height: 720 } });
+				page = await ctx.newPage();
+			} catch (err) {
+				await browser?.close().catch(() => {});
+				browser = null;
+				page = null;
+				throw err;
+			}
 		}
 		await page.goto(PHONE_URL, { waitUntil: "domcontentloaded" });
 		await page.getByPlaceholder("ABCDEF").fill(code.toUpperCase());

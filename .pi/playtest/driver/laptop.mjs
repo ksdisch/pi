@@ -12,6 +12,7 @@ let browser = null;
 let page = null;
 let roomCode = null;
 let phoneJoined = false;
+let booted = false;
 
 function requireBooted() {
 	if (!page) throw new Error("not booted — POST /boot first");
@@ -39,28 +40,40 @@ const snapshot = async () => compact(await requireBooted().evaluate(() => window
 
 const routes = {
 	"/boot": async () => {
-		if (page) return { roomCode, phoneJoined, note: "already booted" };
-		browser = await chromium.launch({ headless: true });
-		const ctx = await browser.newContext({ viewport: { width: 960, height: 600 } });
-		page = await ctx.newPage();
-		// The room code lands in a `room-created` websocket frame (and on the
-		// Phaser canvas, where no DOM reader can see it) — hook the frames.
-		page.on("websocket", (ws) => {
-			ws.on("framereceived", (frame) => {
-				try {
-					const payload = typeof frame.payload === "string" ? frame.payload : frame.payload.toString("utf8");
-					const msg = JSON.parse(payload);
-					if (msg.type === "room-created") roomCode = msg.roomCode;
-					if (msg.type === "phone-joined") phoneJoined = true;
-				} catch {
-					// non-JSON frame — not ours
-				}
+		// `booted` flips only on full success — a failed boot tears down and lets
+		// the caller retry /boot instead of wedging on "already booted".
+		if (booted) return { roomCode, phoneJoined, note: "already booted" };
+		try {
+			browser = await chromium.launch({ headless: true });
+			const ctx = await browser.newContext({ viewport: { width: 960, height: 600 } });
+			page = await ctx.newPage();
+			// The room code lands in a `room-created` websocket frame (and on the
+			// Phaser canvas, where no DOM reader can see it) — hook the frames.
+			page.on("websocket", (ws) => {
+				ws.on("framereceived", (frame) => {
+					try {
+						const payload = typeof frame.payload === "string" ? frame.payload : frame.payload.toString("utf8");
+						const msg = JSON.parse(payload);
+						if (msg.type === "room-created") roomCode = msg.roomCode;
+						if (msg.type === "phone-joined") phoneJoined = true;
+					} catch {
+						// non-JSON frame — not ours
+					}
+				});
 			});
-		});
-		await page.goto(GAME_URL, { waitUntil: "domcontentloaded" });
-		await page.waitForFunction(() => Boolean(window.__constellation), null, { timeout: 15_000 });
-		const got = await waitFor(() => roomCode, 20_000);
-		if (!got) throw new Error("no room-created frame in 20s — is the relay on :3081 up?");
+			await page.goto(GAME_URL, { waitUntil: "domcontentloaded" });
+			await page.waitForFunction(() => Boolean(window.__constellation), null, { timeout: 15_000 });
+			const got = await waitFor(() => roomCode, 20_000);
+			if (!got) throw new Error("no room-created frame in 20s — is the relay on :3081 up?");
+		} catch (err) {
+			await browser?.close().catch(() => {});
+			browser = null;
+			page = null;
+			roomCode = null;
+			phoneJoined = false;
+			throw err;
+		}
+		booted = true;
 		return { roomCode };
 	},
 

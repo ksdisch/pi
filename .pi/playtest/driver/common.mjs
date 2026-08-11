@@ -25,12 +25,20 @@ export function startServer(name, port, routes) {
 				const raw = Buffer.concat(chunks).toString("utf8").trim();
 				if (raw) body = JSON.parse(raw);
 			}
-			const result = chain.then(() => handler(body));
-			chain = result.catch(() => {});
+			// /shutdown must not queue behind a wedged maneuver — the serial chain
+			// is exactly what it may need to break.
+			const result = path === "/shutdown" ? Promise.resolve().then(() => handler(body)) : chain.then(() => handler(body));
+			if (path !== "/shutdown") chain = result.catch(() => {});
 			send(200, (await result) ?? { ok: true });
 		} catch (err) {
 			send(500, { error: String(err instanceof Error ? err.message : err) });
 		}
+	});
+	server.on("error", (err) => {
+		const detail =
+			err?.code === "EADDRINUSE" ? `port ${port} already in use — is a stale driver still running?` : String(err);
+		console.error(`[${name}] server error: ${detail}`);
+		process.exit(1);
 	});
 	server.listen(port, "127.0.0.1", () => {
 		console.log(`[${name}] listening on http://127.0.0.1:${port}`);

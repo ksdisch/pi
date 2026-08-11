@@ -75,7 +75,9 @@ fi
 # 4. preflight: one cheap request per player model — free-tier quotas are DAILY
 # and pi's -p mode dies on the first 429, so a spent model means a DOA session.
 for m in "$LAPTOP_MODEL" "$PHONE_MODEL"; do
-	out="$(cd "$PI_ROOT" && ./pi-test.sh -p -nc --no-extensions --no-session --model "$m" "Reply with exactly: OK" 2>&1 | tail -1)"
+	# `|| true`: under set -e/pipefail a failed probe would kill the script right
+	# here, before the case below can print its diagnostic.
+	out="$(cd "$PI_ROOT" && ./pi-test.sh -p -nc --no-extensions --no-session --model "$m" "Reply with exactly: OK" 2>&1 | tail -1)" || true
 	case "$out" in
 	*OK*) echo "preflight $m: ok" ;;
 	*)
@@ -114,9 +116,13 @@ done
 wait "$LAPTOP_PID" 2>/dev/null || true
 wait "$PHONE_PID" 2>/dev/null || true
 
-# 6. teardown drivers (keep the dev server; teardown mode stops it)
+# 6. teardown drivers (keep the dev server; teardown mode stops it). The curls
+# are the polite path; the pid files catch a driver whose command chain wedged.
 curl -s -m 5 -X POST http://127.0.0.1:4801/shutdown >/dev/null 2>&1 || true
 curl -s -m 5 -X POST http://127.0.0.1:4802/shutdown >/dev/null 2>&1 || true
+sleep 1
+stop_pidfile "$DIR/logs/laptop-driver.pid"
+stop_pidfile "$DIR/logs/phone-driver.pid"
 
 echo
 echo "run $RUNID finished. reports:"

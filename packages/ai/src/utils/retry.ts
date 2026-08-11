@@ -4,7 +4,7 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
 }
 
-const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS: readonly string[] = [
 	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
 	// Zen API. These are subscription/account limits, not transient throttles.
 	"GoUsageLimitError",
@@ -15,12 +15,23 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"Monthly usage limit reached",
 	"available balance",
 
-	// Generic quota/budget/billing exhaustion. `insufficient_quota` is OpenAI's
+	// Account/budget/billing exhaustion. `insufficient_quota` is OpenAI's
 	// quota/billing error code; the other strings cover common gateway wording.
 	"insufficient_quota",
 	"out of budget",
-	"quota exceeded",
 	"billing",
+];
+
+// Hard account/billing markers alone — checked before the Google per-minute
+// carve-out in isRetryableAssistantError, so a terminal marker anywhere in the
+// message always wins over a co-occurring per-minute quota hint.
+const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN = buildProviderErrorPattern(NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS);
+
+const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+	...NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS,
+	// Generic quota-exhaustion wording (Google free-tier tiers phrase both their
+	// per-day caps and their token-rate caps this way).
+	"quota exceeded",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
@@ -223,12 +234,17 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
-	// Google free-tier per-minute throttles read as "quota exceeded" (which the
-	// limit pattern below treats as terminal) but carry a per-minute quotaId
-	// (e.g. GenerateRequestsPerMinutePerProjectPerModel-FreeTier) plus a
-	// seconds-scale RetryInfo — a transient rate limit, not account exhaustion.
-	// Per-day quotaIds still fail fast through the limit pattern.
-	if (/PerMinute/.test(errorMessage)) return true;
+	// Google free-tier per-minute REQUEST throttles read as "quota exceeded"
+	// (which the generic limit pattern treats as terminal) but clear on their
+	// own within the minute — they are retryable. Ordering is load-bearing:
+	// a hard account/billing marker or a per-day quotaId anywhere in the
+	// message outranks the per-minute hint (neither can clear inside a backoff
+	// ladder), and token-rate per-minute quotas (…InputTokensPerModelPerMinute…)
+	// stay terminal too — a request whose context alone exceeds the cap can
+	// never be satisfied by retrying it.
+	if (NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN.test(errorMessage)) return false;
+	if (/PerDay/.test(errorMessage)) return false;
+	if (/GenerateRequests\w*PerMinute/.test(errorMessage)) return true;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }
