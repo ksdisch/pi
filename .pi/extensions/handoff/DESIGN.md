@@ -295,13 +295,17 @@ the sibling `intercom` extension — the two compose rather than compete.
 - **Predecessor selection** (`findPredecessor`, disk-scan so it survives
   `/reload`): the archived note stamped `consumed_by` = this session, else the
   newest pending note, else the newest archived note; notes without
-  `session_file` are skipped everywhere.
+  `session_file` — and notes *written by the asking session itself* (a `/handoff`
+  without quitting leaves one pending; answering as your own ghost would launder
+  your own context as another session's testimony) — are skipped everywhere.
 - **Transcript rendering** (`renderTranscript`): active branch only (walk
   `parentId` up from the last entry — same rewind reasoning as the digest's
-  `getBranch()`), user/assistant text plus `[ran <tool> <args-preview>]` markers
-  (arguments capped at 200 chars) and `[<tool> result] <head-preview>` lines
-  (300 chars) — so "what did you run/send/see?" is answerable — tail-capped at
-  150k chars overall.
+  `getBranch()`, with a visited-set guard because the path comes from a
+  hand-editable note), user/assistant text plus `[ran <tool> <args-preview>]`
+  markers (200 chars), `[<tool> result] <head-preview>` lines (300 chars),
+  `[thinking]` previews (500 chars — "why did you rule that out?" often lives
+  there), and `[session summary]` lines from compaction/branch-summary entries —
+  tail-capped at 150k chars overall.
 - `notes.ts` gained `listArchivedNotePaths`; everything else is additive.
 
 ## Explicitly out of scope for v1 (v2 hooks noted)

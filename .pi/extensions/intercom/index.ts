@@ -21,6 +21,7 @@ import {
 	collectNew,
 	INTERCOM_SCHEMA,
 	type IntercomMessage,
+	isValidAlias,
 	isValidChannel,
 	listChannels,
 	listMessageFiles,
@@ -34,8 +35,12 @@ const WAIT_MAX_S = 300;
 
 interface ChannelState {
 	alias?: string;
-	/** Last filename seen. Undefined until the first scan = deliver the full backlog. */
-	cursor?: string;
+	/**
+	 * Filenames already handled. A set, not a "newest filename" watermark: filenames
+	 * are stamped before the rename that makes them visible, so a slow write can
+	 * surface *below* a watermark and be skipped forever. Empty = deliver the backlog.
+	 */
+	seen: Set<string>;
 	/** True while an `intercom_wait` owns this channel; the watcher stays out of its way. */
 	waiting: boolean;
 }
@@ -59,7 +64,7 @@ function normalizeChannel(raw: string): string | undefined {
 function join(state: IntercomState, channel: string, alias?: string): ChannelState {
 	let entry = state.joined.get(channel);
 	if (!entry) {
-		entry = { waiting: false };
+		entry = { waiting: false, seen: new Set() };
 		state.joined.set(channel, entry);
 	}
 	if (alias) entry.alias = alias;
@@ -69,36 +74,59 @@ function join(state: IntercomState, channel: string, alias?: string): ChannelSta
 /** One watcher pass over every joined channel. Failures land in `watchError`, never throw. */
 function tick(pi: ExtensionAPI, state: IntercomState): void {
 	if (!state.cwd || !state.sessionId) return;
+	const errors: string[] = [];
 	for (const [channel, entry] of state.joined) {
 		if (entry.waiting) continue;
 		try {
-			const collected = collectNew(state.cwd, channel, entry.cursor, state.sessionId);
-			entry.cursor = collected.cursor;
-			state.watchError = undefined;
-			if (collected.messages.length === 0) continue;
+			const collected = collectNew(state.cwd, channel, entry.seen, state.sessionId);
+			// Own and corrupt files carry nothing to deliver — mark them seen right away.
+			for (const name of collected.skipped) entry.seen.add(name);
+			if (collected.delivered.length === 0) continue;
 			pi.sendMessage(
-				{ customType: "intercom", content: formatIncoming(channel, collected.messages), display: true },
+				{
+					customType: "intercom",
+					content: formatIncoming(
+						channel,
+						collected.delivered.map((item) => item.message),
+					),
+					display: true,
+				},
 				// steer + triggerTurn: an idle session wakes up and answers; a busy one sees
 				// the message before its next LLM call instead of after the whole turn.
 				{ deliverAs: "steer", triggerTurn: true },
 			);
+			// Marked seen only after the send call returned: a synchronous failure above
+			// leaves the names unseen and the tick retries them. (sendMessage is
+			// fire-and-forget inside pi, so an *async* delivery failure is not observable
+			// here at all — accepted; see DESIGN.md.)
+			for (const item of collected.delivered) entry.seen.add(item.name);
 		} catch (err) {
-			state.watchError = err instanceof Error ? err.message : String(err);
+			errors.push(`#${channel}: ${err instanceof Error ? err.message : String(err)}`);
 		}
 	}
+	// Set once per tick, outside the loop, so one channel's clean pass cannot wipe
+	// another channel's error before /intercom status ever shows it.
+	state.watchError = errors.length > 0 ? errors.join("; ") : undefined;
 }
 
 function registerWatcher(pi: ExtensionAPI, state: IntercomState): void {
-	let started = false;
+	let timer: ReturnType<typeof setInterval> | undefined;
 	pi.on("session_start", (_event, ctx) => {
 		// Every reason, including resume/fork: whatever session is live now is the sender
 		// identity and cwd the watcher must use.
 		state.cwd = ctx.cwd;
 		state.sessionId = ctx.sessionManager.getSessionId();
-		if (started) return;
-		started = true;
+		if (timer) return;
 		// unref: a forgotten channel must never hold pi's exit open.
-		setInterval(() => tick(pi, state), POLL_MS).unref();
+		timer = setInterval(() => tick(pi, state), POLL_MS);
+		timer.unref();
+	});
+	// Fires for quit AND for reload/new/resume/fork — every path that replaces this
+	// extension instance. Without this, each replacement leaks a live interval bound
+	// to a dead runtime (whose sendMessage then throws on every delivery attempt).
+	pi.on("session_shutdown", () => {
+		if (timer) clearInterval(timer);
+		timer = undefined;
 	});
 }
 
@@ -145,7 +173,11 @@ function registerTools(pi: ExtensionAPI, state: IntercomState): void {
 			const channel = normalizeChannel(params.channel);
 			// Throwing is pi's error contract for tools: it sets isError on the result.
 			if (!channel) throw new Error(`Invalid channel name: ${params.channel}`);
-			const entry = join(state, channel, params.alias?.trim() || undefined);
+			const alias = params.alias?.trim();
+			if (alias && !isValidAlias(alias)) {
+				throw new Error("Invalid alias: use up to 32 characters of letters, digits, spaces, '_', '.', '-'.");
+			}
+			const entry = join(state, channel, alias || undefined);
 			const message: IntercomMessage = {
 				schema: INTERCOM_SCHEMA,
 				channel,
@@ -183,12 +215,22 @@ function registerTools(pi: ExtensionAPI, state: IntercomState): void {
 			try {
 				const deadline = Date.now() + timeoutS * 1000;
 				for (;;) {
-					const collected = collectNew(ctx.cwd, channel, entry.cursor, sessionId);
-					entry.cursor = collected.cursor;
-					if (collected.messages.length > 0) {
+					const collected = collectNew(ctx.cwd, channel, entry.seen, sessionId);
+					for (const name of collected.skipped) entry.seen.add(name);
+					if (collected.delivered.length > 0) {
+						// The return value *is* the delivery, so marking seen here is safe.
+						for (const item of collected.delivered) entry.seen.add(item.name);
 						return {
-							content: [{ type: "text", text: formatIncoming(channel, collected.messages) }],
-							details: { channel, count: collected.messages.length },
+							content: [
+								{
+									type: "text",
+									text: formatIncoming(
+										channel,
+										collected.delivered.map((item) => item.message),
+									),
+								},
+							],
+							details: { channel, count: collected.delivered.length },
 						};
 					}
 					if (signal?.aborted) throw new Error("Wait cancelled.");
@@ -248,6 +290,10 @@ function registerIntercomCommand(pi: ExtensionAPI, state: IntercomState): void {
 				case "join": {
 					// `/intercom join dev as laptop-player`
 					const alias = parts[2] === "as" ? parts.slice(3).join(" ") : undefined;
+					if (alias && !isValidAlias(alias)) {
+						ctx.ui.notify("Invalid alias: up to 32 chars of letters, digits, spaces, '_', '.', '-'.", "error");
+						return;
+					}
 					join(state, channel, alias);
 					ctx.ui.notify(
 						`Joined #${channel}${alias ? ` as ${alias}` : ""}. Backlog and new messages will be delivered.`,
@@ -265,10 +311,9 @@ function registerIntercomCommand(pi: ExtensionAPI, state: IntercomState): void {
 				}
 				case "clear": {
 					const removed = clearChannel(ctx.cwd, channel);
-					// Reset the cursor so the channel reads as brand new: the next scan treats
-					// whatever arrives as a fresh backlog rather than a continuation.
-					const joinedEntry = state.joined.get(channel);
-					if (joinedEntry) joinedEntry.cursor = undefined;
+					// Forget seen names so the channel reads as brand new: the next scan
+					// treats whatever arrives as a fresh backlog rather than a continuation.
+					state.joined.get(channel)?.seen.clear();
 					ctx.ui.notify(`Cleared #${channel} (${removed} message${removed === 1 ? "" : "s"} removed)`, "info");
 					return;
 				}

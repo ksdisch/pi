@@ -56,13 +56,19 @@ export function channelDir(cwd: string, channel: string): string {
 }
 
 /**
- * Mirror the handoff extension's note naming: sanitized ISO timestamp, then the first
- * 8 chars of the sender's session id. The zero-padded per-process sequence keeps two
- * same-millisecond messages from one sender in send order; cross-sender same-ms order
- * is arbitrary, which chat can tolerate.
+ * Sanitized ISO timestamp, then the *last* 8 chars of the sender's session id, then a
+ * zero-padded per-process sequence.
+ *
+ * The tail, not the head: session ids are uuidv7, whose first 8 hex chars are
+ * `floor(Date.now()/65536)` — two sessions launched within ~65 s (the normal case for
+ * this extension) share them, which would collapse identity in labels *and* let two
+ * same-millisecond, same-seq sends collide on filename, where `renameSync` silently
+ * replaces the peer's message. The last 8 chars are random bits. The sequence keeps
+ * one sender's same-millisecond sends in order; six digits so the padding cannot
+ * break lexicographic order within any plausible session.
  */
 export function messageFilename(created: string, sender: string, seq: number): string {
-	return `${created.replace(/[:.]/g, "-")}_${sender.slice(0, 8)}_${String(seq).padStart(4, "0")}.json`;
+	return `${created.replace(/[:.]/g, "-")}_${sender.slice(-8)}_${String(seq).padStart(6, "0")}.json`;
 }
 
 /** Write via `<name>.tmp` + rename, so no reader ever sees a half-written message. */
@@ -121,8 +127,16 @@ export function parseMessage(text: string): IntercomMessage | undefined {
 		created: fields.created,
 		text: fields.text,
 	};
-	if (typeof fields.alias === "string" && fields.alias.length > 0) message.alias = fields.alias;
+	// The alias lands inside the delivery banner line, so a multi-line or oversized one
+	// could forge message headers. Enforced on read, not just on send: message files can
+	// be written by anything, not only this extension.
+	if (typeof fields.alias === "string" && isValidAlias(fields.alias)) message.alias = fields.alias;
 	return message;
+}
+
+/** Single line, printable, bounded — safe to interpolate into the delivery banner. */
+export function isValidAlias(alias: string): boolean {
+	return alias.length > 0 && alias.length <= 32 && /^[A-Za-z0-9 _.-]+$/.test(alias);
 }
 
 /** Message filenames in a channel, sorted (= chronological). `.tmp` scratch is excluded. */
@@ -141,40 +155,52 @@ export function listMessageFiles(cwd: string, channel: string): string[] {
 	return names;
 }
 
+export interface CollectedMessage {
+	name: string;
+	message: IntercomMessage;
+}
+
 export interface Collected {
-	/** New messages from senders other than `excludeSender`, oldest first. */
-	messages: IntercomMessage[];
-	/**
-	 * New cursor: the greatest filename scanned, whether or not it was returned — own
-	 * messages and corrupt files advance it too, so they are never rescanned forever.
-	 * Equal to `afterName` when nothing new existed.
-	 */
-	cursor: string | undefined;
+	/** Unseen messages from senders other than `excludeSender`, oldest first. */
+	delivered: CollectedMessage[];
+	/** Unseen names that carry nothing to deliver (own messages, corrupt files). */
+	skipped: string[];
 }
 
 /**
- * Everything newer than the cursor, minus the reader's own messages.
+ * Everything not yet in `seen`, minus the reader's own messages.
  *
- * `afterName === undefined` means "from the beginning": a fresh join deliberately
- * receives the channel's full backlog, so a question sent before its answerer joined
- * is still delivered.
+ * A *set* of seen names, deliberately not a "greatest filename" high-water mark: a
+ * message's filename is stamped before its `renameSync` makes it visible, so a slow
+ * write (or any backwards wall-clock step) can surface a file that sorts *below*
+ * names already seen. A watermark would skip it forever — silently losing the
+ * message; a set just delivers it on the next scan, late but intact.
+ *
+ * An empty `seen` means "from the beginning": a fresh join deliberately receives the
+ * channel's full backlog, so a question sent before its answerer joined is still
+ * delivered. The caller owns marking names seen — delivered names only after the
+ * delivery attempt, so a failed injection is retried rather than dropped.
  */
-export function collectNew(cwd: string, channel: string, afterName: string | undefined, excludeSender: string): Collected {
-	const names = listMessageFiles(cwd, channel);
-	const fresh = afterName === undefined ? names : names.filter((name) => name > afterName);
-
-	const messages: IntercomMessage[] = [];
-	for (const name of fresh) {
+export function collectNew(
+	cwd: string,
+	channel: string,
+	seen: ReadonlySet<string>,
+	excludeSender: string,
+): Collected {
+	const delivered: CollectedMessage[] = [];
+	const skipped: string[] = [];
+	for (const name of listMessageFiles(cwd, channel)) {
+		if (seen.has(name)) continue;
 		let message: IntercomMessage | undefined;
 		try {
 			message = parseMessage(readFileSync(join(channelDir(cwd, channel), name), "utf8"));
 		} catch {
-			// Unreadable file: skip. The cursor still moves past it below.
+			// Unreadable file: nothing to deliver, but do mark it seen via `skipped`.
 		}
-		if (message && message.sender !== excludeSender) messages.push(message);
+		if (message && message.sender !== excludeSender) delivered.push({ name, message });
+		else skipped.push(name);
 	}
-
-	return { messages, cursor: fresh.length > 0 ? fresh[fresh.length - 1] : afterName };
+	return { delivered, skipped };
 }
 
 /** Channels that currently exist on disk, sorted. */
@@ -200,7 +226,9 @@ export function clearChannel(cwd: string, channel: string): number {
 	if (!existsSync(dir)) return 0;
 	let removed = 0;
 	for (const name of readdirSync(dir)) {
-		if (!name.endsWith(".json") && !name.endsWith(".tmp")) continue;
+		// Only settled messages. A `.tmp` may be a *peer's* in-flight write; deleting it
+		// would make that peer's rename — and its intercom_send — fail.
+		if (!name.endsWith(".json")) continue;
 		try {
 			unlinkSync(join(dir, name));
 			removed++;
@@ -211,7 +239,7 @@ export function clearChannel(cwd: string, channel: string): number {
 	try {
 		rmdirSync(dir);
 	} catch {
-		// Non-empty (unknown files) or already gone — either way, not this call's problem.
+		// Non-empty (unknown or in-flight files) or already gone — either way, fine.
 	}
 	return removed;
 }

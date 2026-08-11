@@ -36,14 +36,20 @@ not couple to it.
     2026-08-11T10-00-00-000Z_019feda9_0000.json   one file per message
 ```
 
-- Filename = sanitized ISO timestamp + first 8 chars of sender session id + per-process
-  sequence. Lexicographic order = delivery order, so a reader's entire resume state is
-  one string: the last filename it has seen (the *cursor*).
+- Filename = sanitized ISO timestamp + *last* 8 chars of sender session id (the uuidv7
+  tail is random; the head is a launch-time clock two same-minute sessions share) +
+  a per-process sequence. Lexicographic order ≈ delivery order.
+- A reader's resume state is a **set of seen filenames**, deliberately not a
+  "greatest filename" watermark: a filename is stamped before the rename that makes
+  it visible, so a slow write (or a backwards wall-clock step) can surface a file
+  below a watermark — which would skip it *forever*. A set delivers it late instead.
 - One file per message (atomic `.tmp` + rename) means concurrent writers can never
   interleave bytes; there is nothing to lock.
 - Message = JSON: `schema` (`pi-intercom/v1`), `channel`, `sender` (full session id),
-  optional `alias`, `created` (ISO), `text`. Files failing validation are skipped and
-  left in place; the cursor still moves past them.
+  optional `alias` (single-line, ≤32 printable chars — enforced on write *and* read,
+  because the alias lands inside the delivery banner and a multi-line one could forge
+  message headers), `created` (ISO), `text`. Files failing validation are marked seen
+  and left in place.
 - `.git/info/exclude` gets `**/.pi/intercom/` appended (same mechanism, and the same
   reasoning, as the handoff extension's `notes.ts` — see the comment there). The
   git-exclude helper is *duplicated*, not imported: extensions are self-contained
@@ -53,21 +59,32 @@ not couple to it.
 ## Delivery semantics
 
 - **Joining** a channel (via `/intercom join`, or automatically by using either tool
-  on it) starts the cursor at `undefined` = the full existing backlog is delivered.
+  on it) starts with an empty seen-set = the full existing backlog is delivered.
   This is deliberate: a question sent *before* its answerer joined must still arrive.
-  Channels are project-local and short-lived; `/intercom clear` resets one between
-  runs.
-- **Own messages are never delivered back** (filtered by `sender`), but they do
-  advance the cursor.
+  Delivery is bounded, though — one injection carries at most the newest **50**
+  messages, each body head-capped at **2000 chars**, with an "N older omitted" line —
+  so a stale channel cannot blow the joiner's context. `/intercom clear` resets a
+  channel between runs (settled `.json` only; a peer's in-flight `.tmp` is left
+  alone).
+- **Own messages are never delivered back** (filtered by `sender`), but they are
+  marked seen.
 - **The watcher** (one `setInterval`, 1.5 s, `unref()`ed so it can never hold pi's
-  exit open) scans every joined channel and injects anything new via
-  `pi.sendMessage(..., { deliverAs: "steer", triggerTurn: true })`: an idle session
-  wakes up and responds; a busy one sees the message before its next LLM call.
+  exit open, and torn down on `session_shutdown` so reload/new-session cannot leak
+  live timers bound to dead runtimes) scans every joined channel and injects anything
+  new via `pi.sendMessage(..., { deliverAs: "steer", triggerTurn: true })`: an idle
+  session wakes up and responds; a busy one sees the message before its next LLM
+  call. Delivered names are marked seen only *after* the send call returns, so a
+  synchronous send failure is retried next tick. `pi.sendMessage` is fire-and-forget
+  inside pi, so an **asynchronous** delivery failure is unobservable here and would
+  lose those messages — accepted for v1: it requires pi's own message queue to fail,
+  and the transcript on disk still holds the message for manual recovery.
 - **`intercom_wait`** marks its channel `waiting`, which keeps the watcher out of the
   way — otherwise one message could be delivered twice (once as the tool result, once
-  as an injected memo). The tool and the watcher share the same per-channel cursor.
+  as an injected memo). The tool and the watcher share the same per-channel seen-set.
 - Watcher failures never throw (an interval callback that throws takes down the
-  process); the last error is kept and surfaced by `/intercom status`.
+  process); per-tick errors are aggregated once at the end of the tick — so one
+  channel's clean pass cannot wipe another's error — and surfaced by
+  `/intercom status`.
 
 ## Surface
 
@@ -84,6 +101,19 @@ Commands (user):
 Renderer: `customType: "intercom"` messages get the same boxed, accent-banner
 treatment as handoff memos, so injected traffic is visually distinct from the user's
 own prompts.
+
+## Trust boundary
+
+Joining a channel means trusting whatever can write into
+`<cwd>/.pi/intercom/<channel>/`: a delivered message wakes an idle agent and starts a
+turn, so any process with write access to the project directory (build scripts, npm
+lifecycle hooks, tools the agent itself runs) could speak on a joined channel. That
+is the feature's nature, not an oversight — the normal peers are the same user's own
+sessions. Mitigations in place: aliases cannot span lines or exceed 32 chars (no
+banner forgery), the injection ends with an explicit closing fence, and nothing is
+delivered from channels a session hasn't joined. Not mitigated: a message body is
+peer-written free text and the receiving model will read it as conversation. Do not
+join channels in untrusted working directories.
 
 ## Known limits (accepted for v1)
 

@@ -69,6 +69,17 @@ describe("findPredecessor", () => {
 		writeNote(dir, bare);
 		expect(findPredecessor(dir, ASKER)).toBeUndefined();
 	});
+
+	it("never answers as its own ghost: the asker's own notes are excluded everywhere", () => {
+		// A /handoff run without quitting leaves the asker's own note pending — the
+		// newest note on disk. It must not be selected.
+		writeNote(dir, note("2026-08-11T11:00:00.000Z", ASKER));
+		expect(findPredecessor(dir, ASKER)).toBeUndefined();
+
+		// With a real predecessor also present, the older foreign note wins.
+		writeNote(dir, note("2026-08-11T09:00:00.000Z", OTHER));
+		expect(findPredecessor(dir, ASKER)?.note.frontmatter.session_id).toBe(OTHER);
+	});
 });
 
 function jsonl(entries: unknown[]): string {
@@ -99,7 +110,9 @@ describe("renderTranscript", () => {
 					parentId: "2",
 					message: { role: "toolResult", toolName: "read", content: "file contents" },
 				},
-				{ type: "message", id: "4", parentId: "3", message: { role: "custom", content: "injected memo" } },
+				// The shape pi actually writes for an injected briefing: a distinct entry
+				// *type*, not a message role. The chain must stay connected through it.
+				{ type: "custom_message", id: "4", parentId: "3", customType: "handoff", content: "injected memo", display: true },
 				{ type: "message", id: "5", parentId: "4", message: { role: "assistant", content: "Fixed it." } },
 			]),
 		);
@@ -111,6 +124,43 @@ describe("renderTranscript", () => {
 				"Assistant: Fixed it.",
 			].join("\n\n"),
 		);
+		expect(text).not.toContain("injected memo");
+	});
+
+	it("keeps thinking previews and compaction/branch summaries", () => {
+		const text = renderTranscript(
+			jsonl([
+				{ type: "session", id: "s", version: 3 },
+				{
+					type: "message",
+					id: "1",
+					parentId: null,
+					message: {
+						role: "assistant",
+						content: [
+							{ type: "thinking", thinking: `Socket approach is racy because of X. ${"z".repeat(600)}` },
+							{ type: "text", text: "Going with files." },
+						],
+					},
+				},
+				{ type: "compaction", id: "2", parentId: "1", summary: "Earlier we built the store module.", firstKeptEntryId: "1", tokensBefore: 9 },
+				{ type: "message", id: "3", parentId: "2", message: { role: "user", content: "continue" } },
+			]),
+		);
+		expect(text).toContain("[thinking] Socket approach is racy because of X.");
+		expect(text).toContain("…");
+		expect(text).toContain("[session summary] Earlier we built the store module.");
+		expect(text).toContain("User: continue");
+	});
+
+	it("terminates on a corrupted parentId cycle", () => {
+		const text = renderTranscript(
+			jsonl([
+				{ type: "message", id: "1", parentId: "2", message: { role: "user", content: "a" } },
+				{ type: "message", id: "2", parentId: "1", message: { role: "user", content: "b" } },
+			]),
+		);
+		expect(text).toBe(["User: a", "User: b"].join("\n\n"));
 	});
 
 	it("follows only the active branch after a rewind", () => {

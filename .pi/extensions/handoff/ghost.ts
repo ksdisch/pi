@@ -54,14 +54,18 @@ function newestWithTranscript(paths: string[], accept: (note: HandoffNote) => bo
  * Determined by scanning disk rather than by reader state, so it survives `/reload`
  * (which resets extension state) and works even in a session that never ingested a
  * note. Notes without `session_file` (`--no-session` writers) can never answer and
- * are skipped at every step.
+ * are skipped at every step. So are notes *written by the asking session itself*
+ * (a `/handoff` run without quitting leaves one pending): answering as your own
+ * ghost would launder the session's context through a second LLM call and report it
+ * as another session's testimony.
  */
 export function findPredecessor(cwd: string, sessionId: string): Predecessor | undefined {
+	const notSelf = (note: HandoffNote) => note.frontmatter.session_id !== sessionId;
 	const archived = listArchivedNotePaths(cwd);
 	return (
-		newestWithTranscript(archived, (note) => note.frontmatter.consumed_by === sessionId) ??
-		newestWithTranscript(listPendingNotePaths(cwd), () => true) ??
-		newestWithTranscript(archived, () => true)
+		newestWithTranscript(archived, (note) => notSelf(note) && note.frontmatter.consumed_by === sessionId) ??
+		newestWithTranscript(listPendingNotePaths(cwd), notSelf) ??
+		newestWithTranscript(archived, notSelf)
 	);
 }
 
@@ -94,12 +98,33 @@ function isToolCallBlock(block: unknown): block is ToolCallBlock {
 	);
 }
 
+interface ThinkingBlock {
+	type: "thinking";
+	thinking: string;
+}
+
+function isThinkingBlock(block: unknown): block is ThinkingBlock {
+	return (
+		typeof block === "object" &&
+		block !== null &&
+		(block as { type?: unknown }).type === "thinking" &&
+		typeof (block as { thinking?: unknown }).thinking === "string"
+	);
+}
+
 /**
  * Cap on the argument preview inside a tool-call marker. Long enough that "what did
  * you send / run / write?" is answerable, short enough that a giant `write` body
  * cannot dominate the transcript.
  */
 const TOOL_ARGS_CHARS = 200;
+
+/**
+ * Cap on a thinking block's preview. Reasoning is often exactly what "why did you
+ * rule that out?" is asking for, so it is kept — but head-capped, because thinking
+ * can dwarf the visible conversation.
+ */
+const THINKING_CHARS = 500;
 
 function toolCallMarker(block: ToolCallBlock): string {
 	let args = "";
@@ -125,6 +150,11 @@ function contentToText(content: unknown): string {
 			if (text) parts.push(text);
 		} else if (isToolCallBlock(block)) {
 			parts.push(toolCallMarker(block));
+		} else if (isThinkingBlock(block)) {
+			const thought = block.thinking.trim();
+			if (!thought) continue;
+			const preview = thought.length > THINKING_CHARS ? `${thought.slice(0, THINKING_CHARS)}…` : thought;
+			parts.push(`[thinking] ${preview}`);
 		}
 	}
 	return parts.join("\n");
@@ -142,6 +172,8 @@ interface RawEntry {
 	id?: unknown;
 	parentId?: unknown;
 	message?: { role?: unknown; content?: unknown; toolName?: unknown };
+	/** Present on `compaction` and `branch_summary` entries. */
+	summary?: unknown;
 }
 
 /**
@@ -176,7 +208,11 @@ export function renderTranscript(content: string): string {
 	}
 
 	const branch: RawEntry[] = [];
-	for (let current = leaf; current; ) {
+	// Visited guard: the transcript path comes from a note that is explicitly
+	// hand-editable, so a corrupted parentId cycle must terminate, not spin.
+	const visited = new Set<RawEntry>();
+	for (let current = leaf; current && !visited.has(current); ) {
+		visited.add(current);
 		branch.push(current);
 		current = typeof current.parentId === "string" ? byId.get(current.parentId) : undefined;
 	}
@@ -184,6 +220,13 @@ export function renderTranscript(content: string): string {
 
 	const lines: string[] = [];
 	for (const entry of branch) {
+		// Compaction and branch summaries are the session's own written account of
+		// history that no longer exists verbatim — keep them.
+		if ((entry.type === "compaction" || entry.type === "branch_summary") && typeof entry.summary === "string") {
+			const summary = entry.summary.trim();
+			if (summary) lines.push(`[session summary] ${summary}`);
+			continue;
+		}
 		if (entry.type !== "message") continue;
 		const role = entry.message?.role;
 		if (role === "toolResult") {
