@@ -77,13 +77,26 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
-	// Captured verbatim from real free-tier sessions (2026-08-11) — every one of
-	// these bodies contains the "please check your plan and billing details"
-	// boilerplate, which is exactly what synthetic fixtures kept omitting.
-	it("retries a real captured Gemini per-minute request throttle", () => {
+	// The *Raw fixtures are byte-for-byte what pi's classifier receives from
+	// real free-tier sessions (2026-08-11 pilot logs): @google/genai's
+	// text-content-type branch double-stringifies, so the quotaId arrives as
+	// \"quotaId\" — and every body carries the "billing details" boilerplate
+	// that synthetic fixtures kept omitting.
+	it("retries a real captured Gemini per-minute request throttle (double-encoded shape)", () => {
 		expect(
 			isRetryableAssistantError(
-				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteRequests }),
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteRequestsRaw }),
+			),
+		).toBe(true);
+	});
+
+	it("retries the same per-minute body in the json-content-type shape", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: googleFreeTier429.perMinuteRequestsJsonShape,
+				}),
 			),
 		).toBe(true);
 	});
@@ -91,7 +104,7 @@ describe("provider retry classification", () => {
 	it("keeps a real captured Gemini per-day exhaustion non-retryable", () => {
 		expect(
 			isRetryableAssistantError(
-				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perDayRequests }),
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perDayRequestsRaw }),
 			),
 		).toBe(false);
 	});
@@ -99,9 +112,35 @@ describe("provider retry classification", () => {
 	it("keeps a real captured token-rate per-minute quota non-retryable (context cannot shrink)", () => {
 		expect(
 			isRetryableAssistantError(
-				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokens }),
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokensRaw }),
 			),
 		).toBe(false);
+	});
+
+	it("requires EVERY structured violation to be a request-rate per-minute quota", () => {
+		const body = (ids: string[]) =>
+			`429 quota exceeded, please check your plan and billing details. violations: [${ids
+				.map((id) => `{"quotaId": "${id}"}`)
+				.join(", ")}]`;
+		const requests = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier";
+		const tokens = "GenerateContentInputTokensPerModelPerMinute-FreeTier";
+		for (const ids of [
+			[requests, tokens],
+			[tokens, requests],
+		]) {
+			expect(
+				isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body(ids) })),
+			).toBe(false);
+		}
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body([requests]) })),
+		).toBe(true);
+	});
+
+	it("lets a hard account-limit marker outrank a structured per-minute quotaId", () => {
+		const errorMessage =
+			'insufficient_quota: You exceeded your current quota. {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
 	});
 
 	it("lets a per-day violation outrank a co-occurring per-minute throttle", () => {

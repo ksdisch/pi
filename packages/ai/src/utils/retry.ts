@@ -27,6 +27,14 @@ const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS: readonly string[] = [
 // message always wins over a co-occurring per-minute quota hint.
 const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN = buildProviderErrorPattern(NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS);
 
+// The same markers minus the bare "billing" substring, for messages that carry
+// a structured Google quotaId: every Gemini quota 429 — transient per-minute
+// throttles included — opens with "please check your plan and billing details",
+// so inside that branch "billing" is boilerplate, not an account signal.
+const NON_RETRYABLE_ACCOUNT_LIMIT_SANS_BILLING_PATTERN = buildProviderErrorPattern(
+	NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS.filter((p) => p !== "billing"),
+);
+
 const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	...NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS,
 	// Generic quota-exhaustion wording (Google free-tier tiers phrase both their
@@ -234,17 +242,24 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
-	// A Google quotaId is authoritative over the prose around it: every Gemini
+	// Google quotaIds are authoritative over the prose around them: every Gemini
 	// quota 429 — transient per-minute throttles included — opens with "please
 	// check your plan and billing details", so the account-limit and "quota
-	// exceeded" patterns below would misclassify all of them as terminal.
-	// Retryable ⇔ a per-minute REQUEST-rate quota (clears on its own within the
-	// minute) with no per-day violation alongside it. Per-day and token-rate
-	// per-minute quotas (…InputTokensPerModelPerMinute…) stay terminal: neither
-	// a day-scale wait nor a context that alone exceeds the cap is something a
-	// backoff ladder can fix.
-	const quotaId = /"quotaId":\s*"([^"]+)"/.exec(errorMessage)?.[1];
-	if (quotaId) return /GenerateRequests\w*PerMinute/.test(quotaId) && !/PerDay/.test(errorMessage);
+	// exceeded" patterns below would misclassify all of them as terminal. The
+	// extraction is escape-tolerant because @google/genai delivers TWO shapes:
+	// a json-content-type body ("quotaId": "…") and, for text bodies, a
+	// double-stringified one (\"quotaId\": \"…\") — the captured pilot logs are
+	// all the second shape. Retryable ⇔ EVERY violation is a per-minute
+	// REQUEST-rate quota (clears on its own within the minute), no per-day
+	// violation rides along, and no hard account marker (insufficient_quota,
+	// usage-limit text) appears — token-rate per-minute quotas
+	// (…InputTokensPerModelPerMinute…) stay terminal: a request whose context
+	// alone exceeds the cap can never be satisfied by retrying it.
+	const quotaIds = [...errorMessage.matchAll(/\\?"quotaId\\?":\s*\\?"([^"\\]+)/g)].map((m) => m[1]);
+	if (quotaIds.length > 0) {
+		if (NON_RETRYABLE_ACCOUNT_LIMIT_SANS_BILLING_PATTERN.test(errorMessage)) return false;
+		return quotaIds.every((id) => /GenerateRequests\w*PerMinute/.test(id)) && !/PerDay/.test(errorMessage);
+	}
 	// Prose-only fallback (no structured quotaId): same precedence, hard
 	// account/billing markers and per-day mentions outrank the per-minute hint.
 	if (NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN.test(errorMessage)) return false;
