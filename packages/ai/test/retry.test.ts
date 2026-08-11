@@ -76,6 +76,22 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
+	it("retries Google free-tier per-minute throttles despite their quota wording", () => {
+		const perMinute429 =
+			'429 Too Many Requests: You exceeded your current quota. "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "retryDelay": "25s"';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: perMinute429 })),
+		).toBe(true);
+	});
+
+	it("keeps Google free-tier per-day exhaustion non-retryable", () => {
+		const perDay429 =
+			'429 Too Many Requests: You exceeded your current quota. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests. "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: perDay429 })),
+		).toBe(false);
+	});
+
 	it("classifies assistant error messages", () => {
 		expect(
 			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: "overloaded_error" })),

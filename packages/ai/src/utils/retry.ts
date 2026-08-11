@@ -223,6 +223,12 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
+	// Google free-tier per-minute throttles read as "quota exceeded" (which the
+	// limit pattern below treats as terminal) but carry a per-minute quotaId
+	// (e.g. GenerateRequestsPerMinutePerProjectPerModel-FreeTier) plus a
+	// seconds-scale RetryInfo — a transient rate limit, not account exhaustion.
+	// Per-day quotaIds still fail fast through the limit pattern.
+	if (/PerMinute/.test(errorMessage)) return true;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

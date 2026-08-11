@@ -77,11 +77,26 @@ the demo flashes and repeated. The report must label driver-mechanics as such.
 
 ## Rate-limit strategy
 
-- Laptop player: `google/gemini-3.6-flash`. Phone player:
-  `google/gemini-3.5-flash-lite` (alias fallback `gemini-flash-lite-latest`) —
-  free-tier buckets are per model, so the pair never shares a 5-rpm budget.
-  If lite turns out not to be free-tier-enabled, fall back to both-on-3.6-flash
-  and accept slower, 429-retried turns.
+- Free-tier quotas are per model AND per **day**, and smaller than the per-minute
+  folklore suggests: the first pilot attempt died instantly because
+  `gemini-3.6-flash` free tier is **20 requests/day**
+  (`GenerateRequestsPerDayPerProjectPerModel-FreeTier`) and the day's budget was
+  already spent. pi exits on such a 429, so a spent model is a dead-on-arrival
+  session — `run-pilot.sh` now preflights one cheap request per player model and
+  aborts with a clear message instead.
+- Google's per-**minute** throttles (15 rpm on the lite tiers) were ALSO fatal:
+  their text says "quota exceeded", which pi's retry classifier treated as
+  terminal account exhaustion, killing both players mid-run on the first hot
+  exchange. Fixed in this branch: `packages/ai/src/utils/retry.ts` now treats a
+  per-minute quotaId as retryable (per-day stays fail-fast), and the repo's
+  `.pi/settings.json` sets `retry: {maxRetries: 6, baseDelayMs: 5000}` so the
+  backoff ladder (5s→160s) actually outlasts a 25-60s throttle window.
+- Default seats: laptop `google/gemini-3.5-flash-lite` (the judgment seat),
+  phone `google/gemini-3.1-flash-lite`. Override via `LAPTOP_MODEL`/
+  `PHONE_MODEL`. Ruled out: the 2.5-era models (404 for new users) and the
+  gemma tier — gemma tool-calls fine but its free tier caps input at
+  16k tokens/min, which a pi session's context alone exceeds, so it 429-dies on
+  the first real turn (the preflight passes only because its probe is tiny).
 - `intercom_wait` blocks token-free — the prompts lean on it hard ("wait for your
   partner, don't poll").
 - Drivers do all busy-waiting internally; a blocked HTTP call costs no tokens.

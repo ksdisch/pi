@@ -8,8 +8,8 @@ set -euo pipefail
 DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PI_ROOT="$(cd "$DIR/../.." && pwd)"
 CONSTELLATION="${CONSTELLATION:-$HOME/Projects/constellation}"
-LAPTOP_MODEL="${LAPTOP_MODEL:-google/gemini-3.6-flash}"
-PHONE_MODEL="${PHONE_MODEL:-google/gemini-3.5-flash-lite}"
+LAPTOP_MODEL="${LAPTOP_MODEL:-google/gemini-3.5-flash-lite}"
+PHONE_MODEL="${PHONE_MODEL:-google/gemini-3.1-flash-lite}"
 PILOT_TIMEOUT_S="${PILOT_TIMEOUT_S:-1500}"
 MODE="${1:-pilot}"
 
@@ -72,7 +72,21 @@ if [[ $MODE == drivers ]]; then
 	exit 0
 fi
 
-# 4. two player sessions
+# 4. preflight: one cheap request per player model — free-tier quotas are DAILY
+# and pi's -p mode dies on the first 429, so a spent model means a DOA session.
+for m in "$LAPTOP_MODEL" "$PHONE_MODEL"; do
+	out="$(cd "$PI_ROOT" && ./pi-test.sh -p -nc --no-extensions --no-session --model "$m" "Reply with exactly: OK" 2>&1 | tail -1)"
+	case "$out" in
+	*OK*) echo "preflight $m: ok" ;;
+	*)
+		echo "ERROR: preflight failed for $m — pick another model (LAPTOP_MODEL/PHONE_MODEL env):" >&2
+		echo "$out" | head -c 400 >&2
+		exit 1
+		;;
+	esac
+done
+
+# 5. two player sessions
 RUNID="$(date +%Y%m%d-%H%M%S)"
 CHANNEL="playtest-$RUNID"
 render() { sed -e "s/__CHANNEL__/$CHANNEL/g" -e "s/__RUNID__/$RUNID/g" -e "s|__DIR__|$DIR|g" "$1"; }
@@ -100,7 +114,7 @@ done
 wait "$LAPTOP_PID" 2>/dev/null || true
 wait "$PHONE_PID" 2>/dev/null || true
 
-# 5. teardown drivers (keep the dev server; teardown mode stops it)
+# 6. teardown drivers (keep the dev server; teardown mode stops it)
 curl -s -m 5 -X POST http://127.0.0.1:4801/shutdown >/dev/null 2>&1 || true
 curl -s -m 5 -X POST http://127.0.0.1:4802/shutdown >/dev/null 2>&1 || true
 
