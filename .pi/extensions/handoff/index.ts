@@ -69,11 +69,19 @@ function registerShutdownDigest(pi: ExtensionAPI, state: HandoffState): void {
 
 		try {
 			const note = buildDigestNote({
-				// The active branch, not every branch in the file. `getEntries()` is a flat
+				// The active branch, not every branch in the file: `getEntries()` is a flat
 				// append-order read, so after a `/tree` rewind it still holds the abandoned
-				// branch — and the backward scans below would hand the successor work the
-				// user explicitly rewound away from. Same reason `/handoff` uses this.
-				entries: ctx.sessionManager.buildContextEntries(),
+				// branch, and the backward scans below would hand the successor work the
+				// user explicitly rewound away from.
+				//
+				// `getBranch()` rather than `/handoff`'s `buildContextEntries()`, which also
+				// folds away compaction — it keeps the compaction entry and drops everything
+				// before `firstKeptEntryId`. `/handoff` can afford that (its serializer turns
+				// the compaction entry into a summary message, so the elided history survives),
+				// but this digest reads only `type === "message"`, so the fold would silently
+				// cut `Files touched` down to the post-compaction tail on exactly the long
+				// sessions the seatbelt exists for.
+				entries: ctx.sessionManager.getBranch(),
 				sessionId: ctx.sessionManager.getSessionId(),
 				sessionFile,
 				cwd: ctx.cwd,

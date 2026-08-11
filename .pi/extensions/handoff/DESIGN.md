@@ -118,7 +118,9 @@ imports only. Keeps installation = "copy or symlink the folder."
 - **Gather:** `ctx.sessionManager.buildContextEntries()` — *not* the hand-rolled
   branch walk upstream's example uses (it duplicates compaction logic and has
   drifted before). Serialize with the exported `convertToLlm` +
-  `serializeConversation` helpers.
+  `serializeConversation` helpers. Compaction-aware is right *here* because the
+  serializer turns a compaction entry into a summary message, so elided history
+  still reaches the composer; Writer B needs the opposite (see below).
 - **Compose:** one-shot `ctx.modelRegistry.complete(ctx.model, …)` with
   `cacheRetention: "none"` and a fresh `sessionId` (uuidv7) so the call never
   pollutes the user's session. System prompt requests the note body sections plus
@@ -146,10 +148,16 @@ imports only. Keeps installation = "copy or symlink the folder."
 - **Skip when:** `wroteNoteThisSession` is set (the `/handoff` note is richer; a
   later digest would supersede it as "newest" with worse content — accepted v1
   simplification: work done *after* `/handoff` but before quit isn't re-captured);
-  no assistant message exists in `getEntries()` (nothing happened — also covers
+  no assistant message exists on the active branch (nothing happened — also covers
   the fact that pi's session file isn't even flushed to disk until the first
   assistant reply); or `getSessionFile()` is undefined (`--no-session` ephemeral
   runs — the user asked not to be recorded; honor it).
+- **Entry source:** `ctx.sessionManager.getBranch()` — the active leaf-to-root
+  path, every entry type, no compaction fold. Not `getEntries()` (flat
+  append-order across *all* branches, so a `/tree` rewind leaks abandoned work
+  into the digest) and not `buildContextEntries()` (drops everything before
+  `firstKeptEntryId`; since this walk reads only `message` entries, that would
+  silently shrink "files touched" to the post-compaction tail).
 - **Digest fields** (pure in-memory walk of `ctx.sessionManager` — no LLM, no
   network, bounded, idempotent; a hung shutdown handler hangs pi's exit):
   last user message; first ~15 lines of last assistant reply; files touched
