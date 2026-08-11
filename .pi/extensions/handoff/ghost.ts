@@ -1,0 +1,310 @@
+/**
+ * Ghost responder: answer the current session's clarifying questions *as the previous
+ * session*, from that session's saved transcript.
+ *
+ * The handoff note the reader ingested carries `session_file` — the predecessor's full
+ * JSONL transcript. That session is gone, but everything it knew is in the file, so a
+ * one-shot LLM call over transcript + question resurrects it well enough to answer
+ * "why did you rule that approach out?" long after it quit. No coordination, no
+ * timing: this works whether the predecessor died seconds or days ago. (When both
+ * sessions are alive at once, the sibling `intercom` extension is the live channel.)
+ *
+ * Like `compose.ts`, every pi import is type-only, which keeps this module
+ * unit-testable without pulling pi's runtime module graph into the test process. The
+ * JSONL parse is deliberately reimplemented here (12 lines, same skip-malformed-lines
+ * semantics as pi's `parseSessionEntries`) rather than imported for the same reason.
+ */
+
+import type { Message, Model } from "@earendil-works/pi-ai";
+import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
+import { type HandoffNote, listArchivedNotePaths, listPendingNotePaths, readNote } from "./notes.ts";
+
+/**
+ * Transcript cap, characters, keeping the tail. Bounded so one giant pasted log in the
+ * predecessor's history cannot blow the question call past the model's context; the
+ * tail is kept because the end of a session is where the answers to "where did you
+ * leave off and why" live.
+ */
+const TRANSCRIPT_CHARS = 150_000;
+const TRUNCATION_MARKER = "(transcript truncated: the earliest part of the session is omitted)";
+
+export interface Predecessor {
+	path: string;
+	note: HandoffNote;
+}
+
+function newestWithTranscript(paths: string[], accept: (note: HandoffNote) => boolean): Predecessor | undefined {
+	// Filenames are timestamp-prefixed and the lists are sorted, so scan newest-first.
+	for (let i = paths.length - 1; i >= 0; i--) {
+		const note = readNote(paths[i]);
+		if (note?.frontmatter.session_file && accept(note)) return { path: paths[i], note };
+	}
+	return undefined;
+}
+
+/**
+ * The session to impersonate, in order of preference:
+ *
+ * 1. The note *this* session ingested (archived, stamped `consumed_by` = us). The
+ *    briefing the user is asking follow-ups about.
+ * 2. The newest pending note — a predecessor whose briefing nobody has consumed yet.
+ * 3. The newest archived note of any provenance — better a slightly stale predecessor
+ *    than refusing to answer at all.
+ *
+ * Determined by scanning disk rather than by reader state, so it survives `/reload`
+ * (which resets extension state) and works even in a session that never ingested a
+ * note. Notes without `session_file` (`--no-session` writers) can never answer and
+ * are skipped at every step. So are notes *written by the asking session itself*
+ * (a `/handoff` run without quitting leaves one pending): answering as your own
+ * ghost would launder the session's context through a second LLM call and report it
+ * as another session's testimony.
+ */
+export function findPredecessor(cwd: string, sessionId: string): Predecessor | undefined {
+	const notSelf = (note: HandoffNote) => note.frontmatter.session_id !== sessionId;
+	const archived = listArchivedNotePaths(cwd);
+	return (
+		newestWithTranscript(archived, (note) => notSelf(note) && note.frontmatter.consumed_by === sessionId) ??
+		newestWithTranscript(listPendingNotePaths(cwd), notSelf) ??
+		newestWithTranscript(archived, notSelf)
+	);
+}
+
+interface TextBlock {
+	type: "text";
+	text: string;
+}
+
+interface ToolCallBlock {
+	type: "toolCall";
+	name: string;
+	arguments?: Record<string, unknown>;
+}
+
+function isTextBlock(block: unknown): block is TextBlock {
+	return (
+		typeof block === "object" &&
+		block !== null &&
+		(block as { type?: unknown }).type === "text" &&
+		typeof (block as { text?: unknown }).text === "string"
+	);
+}
+
+function isToolCallBlock(block: unknown): block is ToolCallBlock {
+	return (
+		typeof block === "object" &&
+		block !== null &&
+		(block as { type?: unknown }).type === "toolCall" &&
+		typeof (block as { name?: unknown }).name === "string"
+	);
+}
+
+interface ThinkingBlock {
+	type: "thinking";
+	thinking: string;
+}
+
+function isThinkingBlock(block: unknown): block is ThinkingBlock {
+	return (
+		typeof block === "object" &&
+		block !== null &&
+		(block as { type?: unknown }).type === "thinking" &&
+		typeof (block as { thinking?: unknown }).thinking === "string"
+	);
+}
+
+/**
+ * Cap on the argument preview inside a tool-call marker. Long enough that "what did
+ * you send / run / write?" is answerable, short enough that a giant `write` body
+ * cannot dominate the transcript.
+ */
+const TOOL_ARGS_CHARS = 200;
+
+/**
+ * Cap on a thinking block's preview. Reasoning is often exactly what "why did you
+ * rule that out?" is asking for, so it is kept — but head-capped, because thinking
+ * can dwarf the visible conversation.
+ */
+const THINKING_CHARS = 500;
+
+function toolCallMarker(block: ToolCallBlock): string {
+	let args = "";
+	if (block.arguments && Object.keys(block.arguments).length > 0) {
+		try {
+			args = JSON.stringify(block.arguments);
+		} catch {
+			args = "(unserializable arguments)";
+		}
+		if (args.length > TOOL_ARGS_CHARS) args = `${args.slice(0, TOOL_ARGS_CHARS)}…`;
+	}
+	return `[ran ${block.name}${args ? ` ${args}` : ""}]`;
+}
+
+/** Text plus one-line markers for tool calls, so the narrative keeps what the session *did*. */
+function contentToText(content: unknown): string {
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const parts: string[] = [];
+	for (const block of content) {
+		if (isTextBlock(block)) {
+			const text = block.text.trim();
+			if (text) parts.push(text);
+		} else if (isToolCallBlock(block)) {
+			parts.push(toolCallMarker(block));
+		} else if (isThinkingBlock(block)) {
+			const thought = block.thinking.trim();
+			if (!thought) continue;
+			const preview = thought.length > THINKING_CHARS ? `${thought.slice(0, THINKING_CHARS)}…` : thought;
+			parts.push(`[thinking] ${preview}`);
+		}
+	}
+	return parts.join("\n");
+}
+
+/**
+ * Cap on a tool result's preview line. Results carry what the session *saw* — command
+ * output, incoming messages — which questions often target; but a single `read` result
+ * can be a whole file, so only the head survives.
+ */
+const TOOL_RESULT_CHARS = 300;
+
+interface RawEntry {
+	type?: unknown;
+	id?: unknown;
+	parentId?: unknown;
+	message?: { role?: unknown; content?: unknown; toolName?: unknown };
+	/** Present on `compaction` and `branch_summary` entries. */
+	summary?: unknown;
+}
+
+/**
+ * Render a session JSONL file to the plain text the ghost call reads.
+ *
+ * Follows the **active branch only**: the file is append-ordered and entries carry
+ * `parentId`, so walking parents up from the last entry excludes anything the user
+ * rewound away from via `/tree` — the same reasoning as the digest's `getBranch()`
+ * (see index.ts). Custom messages (injected briefings) are dropped; user text,
+ * assistant text, tool-call markers, and head-capped tool-result previews carry the
+ * story — the previews are what let the ghost answer "what did you see?" questions.
+ *
+ * Returns "" when the file contains no usable messages.
+ */
+export function renderTranscript(content: string): string {
+	const entries: RawEntry[] = [];
+	for (const line of content.split("\n")) {
+		if (!line.trim()) continue;
+		try {
+			entries.push(JSON.parse(line) as RawEntry);
+		} catch {
+			// Skip malformed lines, matching pi's own parseSessionEntries.
+		}
+	}
+
+	const byId = new Map<string, RawEntry>();
+	let leaf: RawEntry | undefined;
+	for (const entry of entries) {
+		if (typeof entry.id !== "string") continue;
+		byId.set(entry.id, entry);
+		if (entry.type !== "session") leaf = entry;
+	}
+
+	const branch: RawEntry[] = [];
+	// Visited guard: the transcript path comes from a note that is explicitly
+	// hand-editable, so a corrupted parentId cycle must terminate, not spin.
+	const visited = new Set<RawEntry>();
+	for (let current = leaf; current && !visited.has(current); ) {
+		visited.add(current);
+		branch.push(current);
+		current = typeof current.parentId === "string" ? byId.get(current.parentId) : undefined;
+	}
+	branch.reverse();
+
+	const lines: string[] = [];
+	for (const entry of branch) {
+		// Compaction and branch summaries are the session's own written account of
+		// history that no longer exists verbatim — keep them.
+		if ((entry.type === "compaction" || entry.type === "branch_summary") && typeof entry.summary === "string") {
+			const summary = entry.summary.trim();
+			if (summary) lines.push(`[session summary] ${summary}`);
+			continue;
+		}
+		if (entry.type !== "message") continue;
+		const role = entry.message?.role;
+		if (role === "toolResult") {
+			const text = contentToText(entry.message?.content);
+			if (!text) continue;
+			const name = typeof entry.message?.toolName === "string" ? entry.message.toolName : "tool";
+			const preview = text.length > TOOL_RESULT_CHARS ? `${text.slice(0, TOOL_RESULT_CHARS)}…` : text;
+			lines.push(`[${name} result] ${preview}`);
+			continue;
+		}
+		if (role !== "user" && role !== "assistant") continue;
+		const text = contentToText(entry.message?.content);
+		if (!text) continue;
+		lines.push(`${role === "user" ? "User" : "Assistant"}: ${text}`);
+	}
+	return truncateTranscript(lines.join("\n\n"));
+}
+
+/** Exported for tests; callers get it applied by `renderTranscript`. */
+export function truncateTranscript(text: string): string {
+	if (text.length <= TRANSCRIPT_CHARS) return text;
+	const tail = text.slice(-TRANSCRIPT_CHARS);
+	// Start at the next full line so the ghost never reads half a sentence as a fact.
+	const firstBreak = tail.indexOf("\n");
+	return `${TRUNCATION_MARKER}\n\n${firstBreak === -1 ? tail : tail.slice(firstBreak + 1)}`;
+}
+
+export const GHOST_SYSTEM_PROMPT = `You are answering on behalf of a previous pi coding session, from its transcript. A successor session is asking clarifying questions so it can continue the work.
+
+Rules:
+- Answer only from the transcript. If it does not contain the answer, say so plainly — never guess or invent details.
+- Be specific: cite files, commands, decisions, and reasons exactly as they appear.
+- Be concise. The asker is an agent that needs facts, not narrative.`;
+
+export function buildGhostUserMessage(transcriptText: string, question: string): string {
+	return `## Transcript of the previous session\n\n${transcriptText}\n\n## Question from the successor session\n\n${question}`;
+}
+
+export interface GhostOptions {
+	modelRegistry: ModelRegistry;
+	model: Model<any>;
+	transcriptText: string;
+	question: string;
+	signal?: AbortSignal;
+	/** Isolates the ghost call from the asking session's cache and context. */
+	sessionId: string;
+}
+
+/** Same three-way outcome split, for the same reasons, as `composeNoteBody`. */
+export type GhostResult =
+	| { status: "ok"; answer: string }
+	| { status: "aborted" }
+	| { status: "failed"; message: string };
+
+export async function answerAsPredecessor(options: GhostOptions): Promise<GhostResult> {
+	const userMessage: Message = {
+		role: "user",
+		content: [{ type: "text", text: buildGhostUserMessage(options.transcriptText, options.question) }],
+		timestamp: Date.now(),
+	};
+
+	const response = await options.modelRegistry.complete(
+		options.model,
+		{ systemPrompt: GHOST_SYSTEM_PROMPT, messages: [userMessage] },
+		{ signal: options.signal, cacheRetention: "none", sessionId: options.sessionId },
+	);
+
+	if (response.stopReason === "aborted") return { status: "aborted" };
+	if (response.stopReason === "error") {
+		return { status: "failed", message: response.errorMessage ?? "the provider reported an error with no message" };
+	}
+
+	const text = response.content
+		.filter((block): block is { type: "text"; text: string } => block.type === "text")
+		.map((block) => block.text)
+		.join("\n")
+		.trim();
+	if (!text) return { status: "failed", message: `the model returned no text (stop reason: ${response.stopReason})` };
+
+	return { status: "ok", answer: text };
+}
