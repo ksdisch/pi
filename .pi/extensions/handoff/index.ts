@@ -22,6 +22,7 @@ import {
 	serializeConversation,
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
+import { Box, Text } from "@earendil-works/pi-tui";
 import { composeNoteBody } from "./compose.ts";
 import { buildDigestNote } from "./digest.ts";
 import { HANDOFF_SCHEMA, type HandoffNote, writeNote } from "./notes.ts";
@@ -188,9 +189,21 @@ function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 	});
 }
 
+/** Sets the injected briefing apart from the user's own first prompt in the transcript. */
+function registerMemoRenderer(pi: ExtensionAPI): void {
+	pi.registerMessageRenderer("handoff", (message, { outputPad }, theme) => {
+		const text = typeof message.content === "string" ? message.content : "";
+		const [banner, ...rest] = text.split("\n");
+		const box = new Box(outputPad, 1, (t) => theme.bg("customMessageBg", t));
+		box.addChild(new Text(`${theme.fg("accent", banner)}\n${rest.join("\n")}`, 0, 0));
+		return box;
+	});
+}
+
 export default function (pi: ExtensionAPI) {
 	const state: HandoffState = { wroteNoteThisSession: false };
 	registerReader(pi);
+	registerMemoRenderer(pi);
 	registerHandoffCommand(pi, state);
 	registerShutdownDigest(pi, state);
 }

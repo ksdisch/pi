@@ -36,7 +36,7 @@ export function scanPendingNotes(cwd: string): PendingScan {
 	return scan;
 }
 
-export function buildMemo(note: HandoffNote): string {
+export function buildMemo(note: HandoffNote, olderPendingCount = 0): string {
 	const lines = [
 		`Handoff from session ${note.frontmatter.session_id.slice(0, 8)}, ended ${note.frontmatter.created}` +
 			` (${note.frontmatter.source === "command" ? "composed via /handoff" : "shutdown digest"}).`,
@@ -45,6 +45,13 @@ export function buildMemo(note: HandoffNote): string {
 	];
 	if (note.frontmatter.session_file) {
 		lines.push("", `Full transcript of that session: ${note.frontmatter.session_file}`);
+	}
+	if (olderPendingCount > 0) {
+		const plural = olderPendingCount === 1 ? "note was" : "notes were";
+		lines.push(
+			"",
+			`${olderPendingCount} older pending handoff ${plural} superseded by this one and moved to .pi/handoffs/archive/.`,
+		);
 	}
 	return lines.join("\n");
 }
@@ -87,7 +94,7 @@ export function registerReader(pi: ExtensionAPI): void {
 
 			pending = scan;
 			pi.sendMessage(
-				{ customType: "handoff", content: buildMemo(scan.ingest.note), display: true },
+				{ customType: "handoff", content: buildMemo(scan.ingest.note, scan.older.length), display: true },
 				// nextTurn parks the memo until the first real prompt, so an idle session
 				// burns no LLM call and the memo lands whether that prompt comes from a
 				// human, `pi -p`, RPC, or a future autonomous spawner.

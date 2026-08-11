@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	archiveDir,
 	archiveNote,
+	ensureGitExclude,
 	HANDOFF_SCHEMA,
 	type HandoffNote,
 	handoffsDir,
@@ -157,6 +158,92 @@ describe("writeNote / listPendingNotePaths", () => {
 	it("leaves no .tmp file behind after a write", () => {
 		const path = writeNote(dir, sampleNote());
 		expect(existsSync(`${path}.tmp`)).toBe(false);
+	});
+});
+
+describe("ensureGitExclude", () => {
+	const excludeOf = (repo: string) => join(repo, ".git", "info", "exclude");
+
+	it("does nothing outside a git repo", () => {
+		ensureGitExclude(dir);
+		expect(existsSync(join(dir, ".git"))).toBe(false);
+	});
+
+	it("appends the entry, creating info/exclude when absent", () => {
+		mkdirSync(join(dir, ".git"), { recursive: true });
+		ensureGitExclude(dir);
+
+		const contents = readFileSync(excludeOf(dir), "utf8");
+		expect(contents).toContain(".pi/handoffs/");
+		expect(contents).toContain("# pi session handoff notes (local only)");
+		// Never all of .pi/, which some repos track.
+		expect(contents.split("\n").some((line) => line.trim() === ".pi/")).toBe(false);
+	});
+
+	it("is idempotent", () => {
+		mkdirSync(join(dir, ".git", "info"), { recursive: true });
+		writeFileSync(excludeOf(dir), "# git ls-files --others --exclude-from=.git/info/exclude\nbuild/\n");
+		ensureGitExclude(dir);
+		const once = readFileSync(excludeOf(dir), "utf8");
+		ensureGitExclude(dir);
+
+		expect(readFileSync(excludeOf(dir), "utf8")).toBe(once);
+		expect(once).toContain("build/");
+		expect(once.match(/\.pi\/handoffs\//g)).toHaveLength(1);
+	});
+
+	it("recognises an existing entry written without a trailing slash", () => {
+		mkdirSync(join(dir, ".git", "info"), { recursive: true });
+		writeFileSync(excludeOf(dir), ".pi/handoffs\n");
+		ensureGitExclude(dir);
+		expect(readFileSync(excludeOf(dir), "utf8")).toBe(".pi/handoffs\n");
+	});
+
+	it("does not glue the entry onto an unterminated last line", () => {
+		mkdirSync(join(dir, ".git", "info"), { recursive: true });
+		writeFileSync(excludeOf(dir), "build/");
+		ensureGitExclude(dir);
+		expect(readFileSync(excludeOf(dir), "utf8").split("\n")[0]).toBe("build/");
+	});
+
+	it("finds the repo from a subdirectory", () => {
+		mkdirSync(join(dir, ".git"), { recursive: true });
+		const nested = join(dir, "packages", "thing");
+		mkdirSync(nested, { recursive: true });
+		ensureGitExclude(nested);
+		expect(readFileSync(excludeOf(dir), "utf8")).toContain(".pi/handoffs/");
+	});
+
+	it("follows a .git file to the real git dir, as in worktrees and submodules", () => {
+		const gitDir = join(dir, "real-git-dir");
+		mkdirSync(gitDir, { recursive: true });
+		const workTree = join(dir, "worktree");
+		mkdirSync(workTree, { recursive: true });
+		writeFileSync(join(workTree, ".git"), `gitdir: ${gitDir}\n`);
+
+		ensureGitExclude(workTree);
+		expect(readFileSync(join(gitDir, "info", "exclude"), "utf8")).toContain(".pi/handoffs/");
+	});
+
+	it("writes to the shared common dir when the worktree declares one", () => {
+		const commonDir = join(dir, "main.git");
+		mkdirSync(commonDir, { recursive: true });
+		const linkedGitDir = join(commonDir, "worktrees", "feature");
+		mkdirSync(linkedGitDir, { recursive: true });
+		writeFileSync(join(linkedGitDir, "commondir"), "../..\n");
+		const workTree = join(dir, "feature");
+		mkdirSync(workTree, { recursive: true });
+		writeFileSync(join(workTree, ".git"), `gitdir: ${linkedGitDir}\n`);
+
+		ensureGitExclude(workTree);
+		expect(readFileSync(join(commonDir, "info", "exclude"), "utf8")).toContain(".pi/handoffs/");
+		expect(existsSync(join(linkedGitDir, "info", "exclude"))).toBe(false);
+	});
+
+	it("runs as part of writing a note", () => {
+		mkdirSync(join(dir, ".git"), { recursive: true });
+		writeNote(dir, sampleNote());
+		expect(readFileSync(excludeOf(dir), "utf8")).toContain(".pi/handoffs/");
 	});
 });
 

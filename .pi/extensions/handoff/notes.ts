@@ -8,8 +8,18 @@
  * Pure + `node:fs` only. No pi imports, so this module is trivially unit-testable.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import {
+	appendFileSync,
+	existsSync,
+	mkdirSync,
+	readdirSync,
+	readFileSync,
+	renameSync,
+	statSync,
+	unlinkSync,
+	writeFileSync,
+} from "node:fs";
+import { basename, dirname, join, resolve } from "node:path";
 
 export const HANDOFF_SCHEMA = "pi-handoff/v1";
 
@@ -181,12 +191,71 @@ export function writeFileAtomic(filePath: string, contents: string): void {
 	}
 }
 
+/** Only `.pi/handoffs/` is excluded — never all of `.pi/`, which some repos track. */
+const EXCLUDE_ENTRY = ".pi/handoffs/";
+const EXCLUDE_COMMENT = "# pi session handoff notes (local only)";
+
+/** Linked worktrees have their own git dir but share info/exclude via `commondir`. */
+function resolveCommonGitDir(gitDir: string): string {
+	const commonDirFile = join(gitDir, "commondir");
+	if (!existsSync(commonDirFile)) return gitDir;
+	try {
+		const relative = readFileSync(commonDirFile, "utf8").trim();
+		return relative ? resolve(gitDir, relative) : gitDir;
+	} catch {
+		return gitDir;
+	}
+}
+
+/** Undefined when cwd is not inside a git repo. `.git` is a file in worktrees and submodules. */
+function findGitDir(cwd: string): string | undefined {
+	let dir = resolve(cwd);
+	for (;;) {
+		const gitPath = join(dir, ".git");
+		if (existsSync(gitPath)) {
+			const stats = statSync(gitPath);
+			if (stats.isDirectory()) return resolveCommonGitDir(gitPath);
+			if (stats.isFile()) {
+				const match = /^gitdir:\s*(.+)$/m.exec(readFileSync(gitPath, "utf8"));
+				return match ? resolveCommonGitDir(resolve(dir, match[1].trim())) : undefined;
+			}
+			return undefined;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+}
+
+/**
+ * Keep handoff notes out of git status without touching the project's tracked
+ * `.gitignore` — `.git/info/exclude` is local-only and never committed. Idempotent, and
+ * a no-op outside a git repo.
+ */
+export function ensureGitExclude(cwd: string): void {
+	const gitDir = findGitDir(cwd);
+	if (!gitDir) return;
+
+	const excludePath = join(gitDir, "info", "exclude");
+	const current = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
+	if (current.split("\n").some((line) => line.trim().replace(/\/$/, "") === ".pi/handoffs")) return;
+
+	mkdirSync(join(gitDir, "info"), { recursive: true });
+	const separator = current === "" || current.endsWith("\n") ? "" : "\n";
+	appendFileSync(excludePath, `${separator}${EXCLUDE_COMMENT}\n${EXCLUDE_ENTRY}\n`);
+}
+
 /** Write a pending note into `<cwd>/.pi/handoffs/`. Returns the note's path. */
 export function writeNote(cwd: string, note: HandoffNote): string {
 	const dir = handoffsDir(cwd);
 	mkdirSync(dir, { recursive: true });
 	const filePath = join(dir, noteFilename(note.frontmatter.created, note.frontmatter.session_id));
 	writeFileAtomic(filePath, serializeNote(note));
+	try {
+		ensureGitExclude(cwd);
+	} catch {
+		// Git hygiene is a convenience; never fail a note write over it.
+	}
 	return filePath;
 }
 

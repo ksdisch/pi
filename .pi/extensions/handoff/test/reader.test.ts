@@ -92,6 +92,15 @@ describe("buildMemo", () => {
 		delete withoutFile.frontmatter.session_file;
 		expect(buildMemo(withoutFile)).not.toContain("Full transcript");
 	});
+
+	it("says nothing about older notes when there are none", () => {
+		expect(buildMemo(note())).not.toContain("older pending");
+	});
+
+	it("mentions older superseded notes, in the right number", () => {
+		expect(buildMemo(note(), 1)).toContain("1 older pending handoff note was superseded by this one");
+		expect(buildMemo(note(), 3)).toContain("3 older pending handoff notes were superseded by this one");
+	});
 });
 
 describe("archiveDelivered", () => {
