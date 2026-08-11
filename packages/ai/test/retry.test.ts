@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
+import googleFreeTier429 from "./fixtures/google-free-tier-429.json" with { type: "json" };
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -74,6 +75,89 @@ describe("provider retry classification", () => {
 				fauxAssistantMessage("", { stopReason: "error", errorMessage: "429 quota exceeded" }),
 			),
 		).toBe(false);
+	});
+
+	// The *Raw fixtures are byte-for-byte what pi's classifier receives from
+	// real free-tier sessions (2026-08-11 pilot logs): @google/genai's
+	// text-content-type branch double-stringifies, so the quotaId arrives as
+	// \"quotaId\" — and every body carries the "billing details" boilerplate
+	// that synthetic fixtures kept omitting.
+	it("retries a real captured Gemini per-minute request throttle (double-encoded shape)", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteRequestsRaw }),
+			),
+		).toBe(true);
+	});
+
+	it("retries the same per-minute body in the json-content-type shape", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: googleFreeTier429.perMinuteRequestsJsonShape,
+				}),
+			),
+		).toBe(true);
+	});
+
+	it("keeps a real captured Gemini per-day exhaustion non-retryable", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perDayRequestsRaw }),
+			),
+		).toBe(false);
+	});
+
+	it("keeps a real captured token-rate per-minute quota non-retryable (context cannot shrink)", () => {
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokensRaw }),
+			),
+		).toBe(false);
+	});
+
+	it("requires EVERY structured violation to be a request-rate per-minute quota", () => {
+		const body = (ids: string[]) =>
+			`429 quota exceeded, please check your plan and billing details. violations: [${ids
+				.map((id) => `{"quotaId": "${id}"}`)
+				.join(", ")}]`;
+		const requests = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier";
+		const tokens = "GenerateContentInputTokensPerModelPerMinute-FreeTier";
+		for (const ids of [
+			[requests, tokens],
+			[tokens, requests],
+		]) {
+			expect(
+				isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body(ids) })),
+			).toBe(false);
+		}
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body([requests]) })),
+		).toBe(true);
+	});
+
+	it("lets a hard account-limit marker outrank a structured per-minute quotaId", () => {
+		const errorMessage =
+			'insufficient_quota: You exceeded your current quota. {"quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier"}';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
+	it("lets a per-day violation outrank a co-occurring per-minute throttle", () => {
+		const combined429 =
+			'429 quota exceeded. violations: ["GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "GenerateRequestsPerDayPerProjectPerModel-FreeTier"]';
+		expect(
+			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: combined429 })),
+		).toBe(false);
+	});
+
+	it("lets a hard account-limit marker outrank a co-occurring per-minute throttle", () => {
+		for (const errorMessage of [
+			'insufficient_quota: You exceeded your current quota ("GenerateRequestsPerMinutePerProjectPerModel-FreeTier")',
+			"GoUsageLimitError: Monthly usage limit reached; PerMinute burst also throttled",
+		]) {
+			expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+		}
 	});
 
 	it("classifies assistant error messages", () => {

@@ -4,7 +4,7 @@ function buildProviderErrorPattern(patterns: readonly string[]): RegExp {
 	return new RegExp(patterns.join("|"), "i");
 }
 
-const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS: readonly string[] = [
 	// OpenCode Go/free-tier limits returned as 429 JSON error types by OpenCode's
 	// Zen API. These are subscription/account limits, not transient throttles.
 	"GoUsageLimitError",
@@ -15,12 +15,31 @@ const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
 	"Monthly usage limit reached",
 	"available balance",
 
-	// Generic quota/budget/billing exhaustion. `insufficient_quota` is OpenAI's
+	// Account/budget/billing exhaustion. `insufficient_quota` is OpenAI's
 	// quota/billing error code; the other strings cover common gateway wording.
 	"insufficient_quota",
 	"out of budget",
-	"quota exceeded",
 	"billing",
+];
+
+// Hard account/billing markers alone — checked before the Google per-minute
+// carve-out in isRetryableAssistantError, so a terminal marker anywhere in the
+// message always wins over a co-occurring per-minute quota hint.
+const NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN = buildProviderErrorPattern(NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS);
+
+// The same markers minus the bare "billing" substring, for messages that carry
+// a structured Google quotaId: every Gemini quota 429 — transient per-minute
+// throttles included — opens with "please check your plan and billing details",
+// so inside that branch "billing" is boilerplate, not an account signal.
+const NON_RETRYABLE_ACCOUNT_LIMIT_SANS_BILLING_PATTERN = buildProviderErrorPattern(
+	NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS.filter((p) => p !== "billing"),
+);
+
+const NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN = buildProviderErrorPattern([
+	...NON_RETRYABLE_ACCOUNT_LIMIT_PATTERNS,
+	// Generic quota-exhaustion wording (Google free-tier tiers phrase both their
+	// per-day caps and their token-rate caps this way).
+	"quota exceeded",
 ]);
 
 const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
@@ -223,6 +242,29 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
+	// Google quotaIds are authoritative over the prose around them: every Gemini
+	// quota 429 — transient per-minute throttles included — opens with "please
+	// check your plan and billing details", so the account-limit and "quota
+	// exceeded" patterns below would misclassify all of them as terminal. The
+	// extraction is escape-tolerant because @google/genai delivers TWO shapes:
+	// a json-content-type body ("quotaId": "…") and, for text bodies, a
+	// double-stringified one (\"quotaId\": \"…\") — the captured pilot logs are
+	// all the second shape. Retryable ⇔ EVERY violation is a per-minute
+	// REQUEST-rate quota (clears on its own within the minute), no per-day
+	// violation rides along, and no hard account marker (insufficient_quota,
+	// usage-limit text) appears — token-rate per-minute quotas
+	// (…InputTokensPerModelPerMinute…) stay terminal: a request whose context
+	// alone exceeds the cap can never be satisfied by retrying it.
+	const quotaIds = [...errorMessage.matchAll(/\\?"quotaId\\?":\s*\\?"([^"\\]+)/g)].map((m) => m[1]);
+	if (quotaIds.length > 0) {
+		if (NON_RETRYABLE_ACCOUNT_LIMIT_SANS_BILLING_PATTERN.test(errorMessage)) return false;
+		return quotaIds.every((id) => /GenerateRequests\w*PerMinute/.test(id)) && !/PerDay/.test(errorMessage);
+	}
+	// Prose-only fallback (no structured quotaId): same precedence, hard
+	// account/billing markers and per-day mentions outrank the per-minute hint.
+	if (NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN.test(errorMessage)) return false;
+	if (/PerDay/.test(errorMessage)) return false;
+	if (/GenerateRequests\w*PerMinute/.test(errorMessage)) return true;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }

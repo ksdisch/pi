@@ -1,0 +1,9 @@
+{
+	"name": "constellation-playtest-harness",
+	"private": true,
+	"type": "module",
+	"description": "Two-seat Playwright drivers + orchestration for pi co-op playtests of Constellation. See DESIGN.md.",
+	"dependencies": {
+		"playwright": "1.62.1"
+	}
+}
