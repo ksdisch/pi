@@ -71,10 +71,18 @@ export interface ComposeOptions {
 	sessionId: string;
 }
 
-/** Returns undefined when the call was aborted or produced no text. */
-export async function composeNoteBody(
-	options: ComposeOptions,
-): Promise<{ body: string; kickoff?: string } | undefined> {
+/**
+ * Failure and cancellation are separate outcomes on purpose. `complete()` never rejects:
+ * it resolves with `stopReason: "error"` and the reason in `errorMessage`, so collapsing
+ * both into one empty result would report a provider failure as "cancelled" and throw the
+ * real message away — exactly what a long session near its context ceiling would hit.
+ */
+export type ComposeResult =
+	| { status: "ok"; body: string; kickoff?: string }
+	| { status: "aborted" }
+	| { status: "failed"; message: string };
+
+export async function composeNoteBody(options: ComposeOptions): Promise<ComposeResult> {
 	const userMessage: Message = {
 		role: "user",
 		content: [{ type: "text", text: buildComposeUserMessage(options.conversationText, options.goal) }],
@@ -87,14 +95,17 @@ export async function composeNoteBody(
 		{ signal: options.signal, cacheRetention: "none", sessionId: options.sessionId },
 	);
 
-	if (response.stopReason === "aborted") return undefined;
+	if (response.stopReason === "aborted") return { status: "aborted" };
+	if (response.stopReason === "error") {
+		return { status: "failed", message: response.errorMessage ?? "the provider reported an error with no message" };
+	}
 
 	const text = response.content
 		.filter((block): block is { type: "text"; text: string } => block.type === "text")
 		.map((block) => block.text)
 		.join("\n")
 		.trim();
-	if (!text) return undefined;
+	if (!text) return { status: "failed", message: `the model returned no text (stop reason: ${response.stopReason})` };
 
-	return splitKickoff(text);
+	return { status: "ok", ...splitKickoff(text) };
 }

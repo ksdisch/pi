@@ -191,9 +191,23 @@ export function writeFileAtomic(filePath: string, contents: string): void {
 	}
 }
 
-/** Only `.pi/handoffs/` is excluded — never all of `.pi/`, which some repos track. */
-const EXCLUDE_ENTRY = ".pi/handoffs/";
+// Only `.pi/handoffs/` is excluded — never all of `.pi/`, which some repos track.
+//
+// The leading double-star is load-bearing. A gitignore pattern with a separator anywhere
+// but the end is anchored to the ignore file's directory, which for `.git/info/exclude` is
+// the repo root — so a bare `.pi/handoffs/` would miss notes written when pi runs from a
+// subdirectory, which is where `<ctx.cwd>/.pi/handoffs/` puts them. One starred entry
+// covers every cwd in the repo.
+const EXCLUDE_ENTRY = "**/.pi/handoffs/";
 const EXCLUDE_COMMENT = "# pi session handoff notes (local only)";
+
+// Recognise only the starred form. A bare `.pi/handoffs/` line — what earlier runs of this
+// code wrote — does not count as satisfying the entry, so a repo carrying the old broken
+// pattern gets the working one appended rather than skipped. The stale line is a harmless
+// subset of the new one.
+function isHandoffExcludeLine(line: string): boolean {
+	return line.trim().replace(/\/$/, "") === "**/.pi/handoffs";
+}
 
 /** Linked worktrees have their own git dir but share info/exclude via `commondir`. */
 function resolveCommonGitDir(gitDir: string): string {
@@ -238,7 +252,7 @@ export function ensureGitExclude(cwd: string): void {
 
 	const excludePath = join(gitDir, "info", "exclude");
 	const current = existsSync(excludePath) ? readFileSync(excludePath, "utf8") : "";
-	if (current.split("\n").some((line) => line.trim().replace(/\/$/, "") === ".pi/handoffs")) return;
+	if (current.split("\n").some(isHandoffExcludeLine)) return;
 
 	mkdirSync(join(gitDir, "info"), { recursive: true });
 	const separator = current === "" || current.endsWith("\n") ? "" : "\n";

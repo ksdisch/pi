@@ -9,6 +9,7 @@
  * - `session_shutdown` on quit — mechanical digest, no LLM. The seatbelt.
  */
 
+import type { Model } from "@earendil-works/pi-ai";
 import { uuidv7 } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -23,7 +24,7 @@ import {
 	sessionEntryToContextMessages,
 } from "@earendil-works/pi-coding-agent";
 import { Box, Text } from "@earendil-works/pi-tui";
-import { composeNoteBody } from "./compose.ts";
+import { type ComposeResult, composeNoteBody } from "./compose.ts";
 import { buildDigestNote } from "./digest.ts";
 import { HANDOFF_SCHEMA, type HandoffNote, writeNote } from "./notes.ts";
 import { registerReader } from "./reader.ts";
@@ -35,6 +36,18 @@ export interface HandoffState {
 
 function modelLabel(ctx: ExtensionContext): string | undefined {
 	return ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : undefined;
+}
+
+/**
+ * Report from the shutdown path, where `ctx.ui.notify` is not enough on its own.
+ * Interactive quit stops the TUI *before* emitting `session_shutdown` — deliberately, so
+ * extension teardown cannot repaint the final frame — so a notify there paints nothing.
+ * A seatbelt that can fail silently is not a seatbelt, so failures also go to stderr,
+ * which pi itself proves still works at that point (it writes the resume hint right after).
+ */
+function reportFromShutdown(ctx: ExtensionContext, message: string, level: "info" | "warning"): void {
+	if (ctx.hasUI) ctx.ui.notify(message, level);
+	if (level === "warning") console.error(message);
 }
 
 function registerShutdownDigest(pi: ExtensionAPI, state: HandoffState): void {
@@ -59,11 +72,10 @@ function registerShutdownDigest(pi: ExtensionAPI, state: HandoffState): void {
 			if (!note) return;
 
 			const notePath = writeNote(ctx.cwd, note);
-			if (ctx.hasUI) ctx.ui.notify(`Handoff note written: ${notePath}`, "info");
+			reportFromShutdown(ctx, `Handoff note written: ${notePath}`, "info");
 		} catch (err) {
 			// Never let a note failure interfere with pi's exit.
-			if (ctx.hasUI)
-				ctx.ui.notify(`Handoff note failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			reportFromShutdown(ctx, `Handoff note failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
 		}
 	});
 }
@@ -79,11 +91,10 @@ function serializeBranch(entries: SessionEntry[]): string {
  */
 async function compose(
 	ctx: ExtensionCommandContext,
+	model: Model<any>,
 	conversationText: string,
 	goal: string,
-): Promise<{ body: string; kickoff?: string } | undefined> {
-	const model = ctx.model;
-	if (!model) return undefined;
+): Promise<ComposeResult> {
 	const run = (signal?: AbortSignal) =>
 		composeNoteBody({
 			modelRegistry: ctx.modelRegistry,
@@ -96,15 +107,14 @@ async function compose(
 
 	if (ctx.mode !== "tui") return run();
 
-	return ctx.ui.custom<{ body: string; kickoff?: string } | undefined>((tui, theme, _keybindings, done) => {
+	return ctx.ui.custom<ComposeResult>((tui, theme, _keybindings, done) => {
 		const loader = new BorderedLoader(tui, theme, "Composing handoff note...");
-		loader.onAbort = () => done(undefined);
+		loader.onAbort = () => done({ status: "aborted" });
 		run(loader.signal)
 			.then(done)
-			.catch((err) => {
-				ctx.ui.notify(`Handoff composition failed: ${err instanceof Error ? err.message : String(err)}`, "error");
-				done(undefined);
-			});
+			// composeNoteBody reports provider failures through its result rather than by
+			// throwing, so this catches only an unexpected throw from the call itself.
+			.catch((err) => done({ status: "failed", message: err instanceof Error ? err.message : String(err) }));
 		return loader;
 	});
 }
@@ -113,7 +123,8 @@ function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 	pi.registerCommand("handoff", {
 		description: "Write a handoff note for the next session",
 		handler: async (args, ctx) => {
-			if (!ctx.model) {
+			const model = ctx.model;
+			if (!model) {
 				ctx.ui.notify("No model selected", "error");
 				return;
 			}
@@ -128,8 +139,12 @@ function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 			}
 
 			const goal = args.trim();
-			const composed = await compose(ctx, conversationText, goal);
-			if (!composed) {
+			const composed = await compose(ctx, model, conversationText, goal);
+			if (composed.status === "failed") {
+				ctx.ui.notify(`Handoff composition failed: ${composed.message}`, "error");
+				return;
+			}
+			if (composed.status === "aborted") {
 				ctx.ui.notify("Handoff cancelled", "info");
 				return;
 			}

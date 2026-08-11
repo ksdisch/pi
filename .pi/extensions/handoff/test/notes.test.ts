@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -163,6 +164,10 @@ describe("writeNote / listPendingNotePaths", () => {
 
 describe("ensureGitExclude", () => {
 	const excludeOf = (repo: string) => join(repo, ".git", "info", "exclude");
+	const git = (repo: string, ...args: string[]) =>
+		spawnSync("git", args, { cwd: repo, env: { ...process.env, GIT_CONFIG_NOSYSTEM: "1" }, encoding: "utf8" });
+	/** `git check-ignore` exits 1 for a path that is not ignored. */
+	const isIgnored = (repo: string, relativePath: string) => git(repo, "check-ignore", relativePath).status === 0;
 
 	it("does nothing outside a git repo", () => {
 		ensureGitExclude(dir);
@@ -194,9 +199,9 @@ describe("ensureGitExclude", () => {
 
 	it("recognises an existing entry written without a trailing slash", () => {
 		mkdirSync(join(dir, ".git", "info"), { recursive: true });
-		writeFileSync(excludeOf(dir), ".pi/handoffs\n");
+		writeFileSync(excludeOf(dir), "**/.pi/handoffs\n");
 		ensureGitExclude(dir);
-		expect(readFileSync(excludeOf(dir), "utf8")).toBe(".pi/handoffs\n");
+		expect(readFileSync(excludeOf(dir), "utf8")).toBe("**/.pi/handoffs\n");
 	});
 
 	it("does not glue the entry onto an unterminated last line", () => {
@@ -206,12 +211,42 @@ describe("ensureGitExclude", () => {
 		expect(readFileSync(excludeOf(dir), "utf8").split("\n")[0]).toBe("build/");
 	});
 
-	it("finds the repo from a subdirectory", () => {
-		mkdirSync(join(dir, ".git"), { recursive: true });
-		const nested = join(dir, "packages", "thing");
-		mkdirSync(nested, { recursive: true });
+	it("actually ignores notes, from the repo root and from a subdirectory", () => {
+		// Asserts ignore-status via git itself, not the presence of a string: a pattern with
+		// a mid-string separator is anchored to the repo root, so a bare `.pi/handoffs/`
+		// passes a substring check while leaving subdirectory notes untracked-and-visible.
+		const repo = join(dir, "repo");
+		mkdirSync(repo, { recursive: true });
+		expect(git(repo, "init", "-q").status).toBe(0);
+
+		const nested = join(repo, "packages", "thing");
+		mkdirSync(join(nested, ".pi", "handoffs"), { recursive: true });
+		mkdirSync(join(repo, ".pi", "handoffs"), { recursive: true });
+		writeFileSync(join(repo, ".pi", "handoffs", "root.md"), "x");
+		writeFileSync(join(nested, ".pi", "handoffs", "nested.md"), "x");
+
 		ensureGitExclude(nested);
-		expect(readFileSync(excludeOf(dir), "utf8")).toContain(".pi/handoffs/");
+
+		expect(isIgnored(repo, ".pi/handoffs/root.md")).toBe(true);
+		expect(isIgnored(repo, "packages/thing/.pi/handoffs/nested.md")).toBe(true);
+	});
+
+	it("never excludes all of .pi, which some repos track", () => {
+		const repo = join(dir, "repo");
+		mkdirSync(repo, { recursive: true });
+		expect(git(repo, "init", "-q").status).toBe(0);
+		mkdirSync(join(repo, ".pi", "extensions"), { recursive: true });
+		writeFileSync(join(repo, ".pi", "extensions", "thing.ts"), "x");
+
+		ensureGitExclude(repo);
+		expect(isIgnored(repo, ".pi/extensions/thing.ts")).toBe(false);
+	});
+
+	it("adds the working pattern to a repo carrying only the old root-anchored one", () => {
+		mkdirSync(join(dir, ".git", "info"), { recursive: true });
+		writeFileSync(excludeOf(dir), ".pi/handoffs/\n");
+		ensureGitExclude(dir);
+		expect(readFileSync(excludeOf(dir), "utf8")).toContain("**/.pi/handoffs/");
 	});
 
 	it("follows a .git file to the real git dir, as in worktrees and submodules", () => {

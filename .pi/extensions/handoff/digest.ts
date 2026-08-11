@@ -8,8 +8,17 @@
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 import { HANDOFF_SCHEMA, type HandoffNote } from "./notes.ts";
 
-/** Lines of the last assistant reply carried into the note. */
+/**
+ * Excerpt bounds. Both sides of the last exchange are capped, on lines and on characters:
+ * the whole note body is re-injected into the successor's context as a user message, so an
+ * uncapped paste (a log, a stack trace, a file) at the end of one session would become a
+ * permanent oversized prefix on the next session's first turn.
+ */
 const ASSISTANT_EXCERPT_LINES = 15;
+const USER_EXCERPT_LINES = 15;
+const EXCERPT_CHARS = 2000;
+/** A frontmatter scalar, so held much tighter than the body excerpts. */
+const KICKOFF_CHARS = 200;
 
 interface TextBlock {
 	type: "text";
@@ -93,6 +102,15 @@ export function firstLines(text: string, count: number): string {
 	return `${lines.slice(0, count).join("\n").trim()}\n...`;
 }
 
+export function truncateChars(text: string, max: number): string {
+	return text.length <= max ? text : `${text.slice(0, max).trimEnd()}...`;
+}
+
+/** An excerpt bounded on both axes: a 15-line paste can still be a megabyte. */
+export function excerpt(text: string, lines: number): string {
+	return truncateChars(firstLines(text, lines), EXCERPT_CHARS);
+}
+
 function firstLine(text: string): string {
 	return text.split("\n")[0]?.trim() ?? "";
 }
@@ -157,7 +175,7 @@ export function buildDigestNote(input: DigestInput): HandoffNote | undefined {
 	const userText = lastUserText(input.entries);
 	const assistantText = lastAssistantText(input.entries);
 	const files = collectFilesTouched(input.entries);
-	const lastRequest = firstLine(userText);
+	const lastRequest = truncateChars(firstLine(userText), KICKOFF_CHARS);
 
 	const body = [
 		"## Context",
@@ -171,9 +189,9 @@ export function buildDigestNote(input: DigestInput): HandoffNote | undefined {
 		renderFilesSection(files),
 		"",
 		"## Last exchange",
-		`**User:** ${userText || "(none)"}`,
+		`**User:** ${excerpt(userText, USER_EXCERPT_LINES) || "(none)"}`,
 		"",
-		`**Assistant:** ${firstLines(assistantText, ASSISTANT_EXCERPT_LINES) || "(none)"}`,
+		`**Assistant:** ${excerpt(assistantText, ASSISTANT_EXCERPT_LINES) || "(none)"}`,
 	].join("\n");
 
 	return {

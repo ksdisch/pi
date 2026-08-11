@@ -7,6 +7,7 @@ import {
 	hasAssistantMessage,
 	lastAssistantText,
 	lastUserText,
+	truncateChars,
 } from "../digest.ts";
 import { HANDOFF_SCHEMA } from "../notes.ts";
 
@@ -102,6 +103,63 @@ describe("firstLines", () => {
 
 	it("truncates and marks the cut", () => {
 		expect(firstLines("a\nb\nc\nd", 2)).toBe("a\nb\n...");
+	});
+});
+
+describe("truncateChars", () => {
+	it("returns short text untouched", () => {
+		expect(truncateChars("hello", 10)).toBe("hello");
+	});
+
+	it("cuts at the limit and marks the cut", () => {
+		expect(truncateChars("abcdefghij", 4)).toBe("abcd...");
+	});
+});
+
+describe("excerpt bounds in the note body", () => {
+	// The whole body is re-injected into the successor's context as a user message, so an
+	// unbounded paste at the end of one session would prefix the next session's first turn.
+	it("caps a user message that is long in lines", () => {
+		const paste = Array.from({ length: 400 }, (_, i) => `line ${i}`).join("\n");
+		const body = buildDigestNote({
+			...DIGEST_BASE,
+			entries: [user(paste), assistant([{ type: "text", text: "ok" }])],
+		})?.body as string;
+
+		expect(body).toContain("line 0");
+		expect(body).not.toContain("line 300");
+		expect(body).toContain("...");
+	});
+
+	it("caps a user message that is one enormous line", () => {
+		const paste = "x".repeat(50_000);
+		const body = buildDigestNote({
+			...DIGEST_BASE,
+			entries: [user(paste), assistant([{ type: "text", text: "ok" }])],
+		})?.body as string;
+
+		expect(body.length).toBeLessThan(4000);
+	});
+
+	it("caps an assistant reply that is one enormous line", () => {
+		const flood = "y".repeat(50_000);
+		const body = buildDigestNote({
+			...DIGEST_BASE,
+			entries: [user("hi"), assistant([{ type: "text", text: flood }])],
+		})?.body as string;
+
+		expect(body.length).toBeLessThan(4000);
+	});
+
+	it("caps the kickoff, which is a frontmatter scalar", () => {
+		const paste = `${"z".repeat(50_000)}\nsecond line`;
+		const note = buildDigestNote({
+			...DIGEST_BASE,
+			entries: [user(paste), assistant([{ type: "text", text: "ok" }])],
+		});
+
+		expect(note?.frontmatter.kickoff.length).toBeLessThan(300);
+		expect(note?.frontmatter.kickoff.startsWith("Continue: zzz")).toBe(true);
 	});
 });
 
