@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { fauxAssistantMessage } from "../src/providers/faux.ts";
 import { isRetryableAssistantError, type RetryPolicy, retryAssistantCall } from "../src/utils/retry.ts";
+import googleFreeTier429 from "./fixtures/google-free-tier-429.json" with { type: "json" };
 
 const openAIExplicitRetryMessage =
 	"An error occurred while processing your request. You can retry your request, or contact us through our help center at help.openai.com if the error persists. Please include the request ID req_******** in your message.";
@@ -76,27 +77,30 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
-	it("retries Google free-tier per-minute throttles despite their quota wording", () => {
-		const perMinute429 =
-			'429 Too Many Requests: You exceeded your current quota. "quotaId": "GenerateRequestsPerMinutePerProjectPerModel-FreeTier", "retryDelay": "25s"';
+	// Captured verbatim from real free-tier sessions (2026-08-11) — every one of
+	// these bodies contains the "please check your plan and billing details"
+	// boilerplate, which is exactly what synthetic fixtures kept omitting.
+	it("retries a real captured Gemini per-minute request throttle", () => {
 		expect(
-			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: perMinute429 })),
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteRequests }),
+			),
 		).toBe(true);
 	});
 
-	it("keeps Google free-tier per-day exhaustion non-retryable", () => {
-		const perDay429 =
-			'429 Too Many Requests: You exceeded your current quota. Quota exceeded for metric: generativelanguage.googleapis.com/generate_content_free_tier_requests. "quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"';
+	it("keeps a real captured Gemini per-day exhaustion non-retryable", () => {
 		expect(
-			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: perDay429 })),
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perDayRequests }),
+			),
 		).toBe(false);
 	});
 
-	it("keeps Google token-rate per-minute quotas non-retryable (context cannot shrink)", () => {
-		const tokenRate429 =
-			'429 Too Many Requests: You exceeded your current quota. Quota exceeded for metric: generate_content_free_tier_input_token_count. "quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"';
+	it("keeps a real captured token-rate per-minute quota non-retryable (context cannot shrink)", () => {
 		expect(
-			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: tokenRate429 })),
+			isRetryableAssistantError(
+				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokens }),
+			),
 		).toBe(false);
 	});
 

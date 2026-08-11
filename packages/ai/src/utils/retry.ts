@@ -234,14 +234,19 @@ export async function retryAssistantCall(
 export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (message.stopReason !== "error" || !message.errorMessage) return false;
 	const errorMessage = message.errorMessage;
-	// Google free-tier per-minute REQUEST throttles read as "quota exceeded"
-	// (which the generic limit pattern treats as terminal) but clear on their
-	// own within the minute — they are retryable. Ordering is load-bearing:
-	// a hard account/billing marker or a per-day quotaId anywhere in the
-	// message outranks the per-minute hint (neither can clear inside a backoff
-	// ladder), and token-rate per-minute quotas (…InputTokensPerModelPerMinute…)
-	// stay terminal too — a request whose context alone exceeds the cap can
-	// never be satisfied by retrying it.
+	// A Google quotaId is authoritative over the prose around it: every Gemini
+	// quota 429 — transient per-minute throttles included — opens with "please
+	// check your plan and billing details", so the account-limit and "quota
+	// exceeded" patterns below would misclassify all of them as terminal.
+	// Retryable ⇔ a per-minute REQUEST-rate quota (clears on its own within the
+	// minute) with no per-day violation alongside it. Per-day and token-rate
+	// per-minute quotas (…InputTokensPerModelPerMinute…) stay terminal: neither
+	// a day-scale wait nor a context that alone exceeds the cap is something a
+	// backoff ladder can fix.
+	const quotaId = /"quotaId":\s*"([^"]+)"/.exec(errorMessage)?.[1];
+	if (quotaId) return /GenerateRequests\w*PerMinute/.test(quotaId) && !/PerDay/.test(errorMessage);
+	// Prose-only fallback (no structured quotaId): same precedence, hard
+	// account/billing markers and per-day mentions outrank the per-minute hint.
 	if (NON_RETRYABLE_ACCOUNT_LIMIT_PATTERN.test(errorMessage)) return false;
 	if (/PerDay/.test(errorMessage)) return false;
 	if (/GenerateRequests\w*PerMinute/.test(errorMessage)) return true;
