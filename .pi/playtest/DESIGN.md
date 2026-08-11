@@ -87,10 +87,13 @@ the demo flashes and repeated. The report must label driver-mechanics as such.
 - Google's per-**minute** throttles (15 rpm on the lite tiers) were ALSO fatal:
   their text says "quota exceeded", which pi's retry classifier treated as
   terminal account exhaustion, killing both players mid-run on the first hot
-  exchange. Fixed in this branch: `packages/ai/src/utils/retry.ts` now treats a
-  per-minute quotaId as retryable (per-day stays fail-fast), and the repo's
-  `.pi/settings.json` sets `retry: {maxRetries: 6, baseDelayMs: 5000}` so the
-  backoff ladder (5s→160s) actually outlasts a 25-60s throttle window.
+  exchange. Two upstream fixes, both on pi's shipped defaults — the harness
+  needs no settings override: `packages/ai/src/utils/retry.ts` treats a
+  per-minute request-rate quotaId as retryable (per-day and token-rate stay
+  fail-fast), and `_prepareRetry` floors its backoff at the delay Google states
+  in the same body (`RetryInfo` / "Please retry in 25.3s"), because the default
+  2s/4s/8s ladder spends its whole budget at t=14s — entirely inside a 25s
+  throttle window, where no attempt can succeed.
 - Default seats: laptop `google/gemini-3.5-flash-lite` (the judgment seat),
   phone `google/gemini-3.1-flash-lite`. Override via `LAPTOP_MODEL`/
   `PHONE_MODEL`. Ruled out: the 2.5-era models (404 for new users) and the
@@ -105,15 +108,43 @@ the demo flashes and repeated. The report must label driver-mechanics as such.
 
 1. Preflight: constellation `npm run dev` up (start + wait on :5180 and
    :3081/healthz if not), `npm install` in `.pi/playtest/` if needed.
-2. Start both drivers in the background; wait for their `/health`.
-3. Mint `RUNID`; channel = `playtest-<RUNID>` (fresh channel per run — no stale
-   backlog, no clear step).
+2. Mint `RUNID`; channel = `playtest-<RUNID>` (fresh channel per run — no stale
+   backlog, no clear step); `VIDEO_DIR=reports/video/<RUNID>`.
+3. Start both drivers in the background; wait for their `/health`.
 4. Render the two prompt templates (`prompts/laptop.md`, `prompts/phone.md`) with
    RUNID/channel/ports; launch both sessions in parallel:
    `./pi-test.sh -p -nc --model <model> -n playtest-<role>-<RUNID> "<prompt>"`.
    (`-nc`: the pi repo's AGENTS.md is about developing pi — noise for a player.)
 5. Babysit with a hard timeout (default 25 min); kill + report on overrun.
 6. Collect `reports/<RUNID>-laptop.md` + `reports/<RUNID>-phone.md`.
+
+Ports are single-sourced. `LAPTOP_DRIVER_PORT`/`PHONE_DRIVER_PORT` are read by
+the orchestrator, exported to the drivers, and substituted into the rendered
+prompts. `GAME_PORT` reaches the drivers as the `GAME_URL`/`PHONE_URL` the
+orchestrator derives from it and exports — the drivers navigate by URL, so
+exporting the bare port would health-check one server while Chromium opened
+another. So one override moves every side.
+
+Everything the script backgrounds gets its own process group (`set -m`), and
+teardown kills the group — `npm run dev` is a wrapper around vite and the relay,
+and each player pid is a subshell with pi inside it, so a plain `kill` reaches
+neither. Driver cleanup runs from an `EXIT`/`INT`/`TERM` trap armed as soon as
+the drivers are up, so the preflight's own `exit 1` on a spent daily quota — the
+expected bail-out — cleans up too. `./run-pilot.sh teardown` additionally reaps
+:5180/:3081 by port, but only when `logs/dev.pid` records that this script
+started the server; a dev server you started by hand is left alone.
+
+### Watching a run
+
+- `HEADED=1 ./run-pilot.sh` launches real Chromium windows (game 960×600, phone
+  390×720) instead of headless ones — nothing else changes, including what the
+  players can perceive.
+- Every run records video to `reports/video/<RUNID>/{laptop,phone}.webm`
+  regardless of `HEADED`. Playwright only finalizes those files when the context
+  closes, so they appear at `/shutdown` — i.e. when the run ends. That flush
+  happens before the driver answers, so the orchestrator gives `/shutdown` a
+  `SHUTDOWN_TIMEOUT_S` (90s) budget rather than a ping-sized one, and prints the
+  path each driver reports saving instead of asserting the directory has files.
 
 The claude session that ran the pilot synthesizes the two player reports into the
 final critique for Kyle; players only report their own seat's experience.

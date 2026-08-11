@@ -4,8 +4,9 @@
 # NOTE: this file encodes the planet-1 solution — player prompts must never
 # reference it; the players are supposed to discover the level themselves.
 set -uo pipefail
-L=http://127.0.0.1:4801
-P=http://127.0.0.1:4802
+# Same env names the drivers read, so an override moves both sides together.
+L="http://127.0.0.1:${LAPTOP_DRIVER_PORT:-4801}"
+P="http://127.0.0.1:${PHONE_DRIVER_PORT:-4802}"
 
 move() { curl -s -m 40 -X POST $L/move -d "$1"; }
 solve() { curl -s -m 60 -X POST $P/solve -d "{\"power\":\"$1\"}"; }

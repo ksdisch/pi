@@ -212,7 +212,14 @@ export async function retryAssistantCall(
 
 		attempt++;
 		lastRetry = { attempt, errorMessage: response.errorMessage || "Unknown error" };
-		const delayMs = policy!.baseDelayMs * 2 ** (attempt - 1);
+		// Same floor as the agent-turn loop in coding-agent's `_prepareRetry`: this
+		// loop shares its policy and its classifier, so an unfloored ladder here
+		// would still burn every compaction retry inside a throttle window the
+		// provider already told us to wait out.
+		const delayMs = Math.max(
+			policy!.baseDelayMs * 2 ** (attempt - 1),
+			extractServerRetryDelayMs(response.errorMessage) ?? 0,
+		);
 		await callbacks?.onRetryScheduled?.(attempt, maxAttempts, delayMs, lastRetry.errorMessage);
 
 		// Normalize aborts during retry backoff to the same AssistantMessage shape as
@@ -267,4 +274,45 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	if (/GenerateRequests\w*PerMinute/.test(errorMessage)) return true;
 	if (NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN.test(errorMessage)) return false;
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
+}
+
+/** Upper bound on a server-stated retry delay callers should honor. */
+export const MAX_SERVER_RETRY_DELAY_MS = 60_000;
+
+/**
+ * A throttle window Google states to the second is easy to under-wait: a
+ * request-rate 429 says "Please retry in 25.3s" while a `2s * 2^(n-1)` ladder
+ * spends its whole budget by t=14s. Retrying inside the stated window cannot
+ * succeed, so callers floor their backoff at what the provider asked for.
+ */
+const SERVER_RETRY_DELAY_PATTERNS: readonly RegExp[] = [
+	// google.rpc.RetryInfo, in both @google/genai body shapes (json branch
+	// `"retryDelay": "25s"`, text branch double-stringified `\"retryDelay\": \"25s\"`).
+	/\\?"retryDelay\\?":\s*\\?"(\d+(?:\.\d+)?)s/g,
+	// The same delay in the prose Google puts in `error.message`, at full
+	// precision: "Please retry in 25.309369594s."
+	/retry in (\d+(?:\.\d+)?)\s*s/gi,
+];
+
+/** Padding over the stated delay — retrying on the exact boundary still throttles. */
+const SERVER_RETRY_DELAY_PAD_MS = 1_000;
+
+/**
+ * Extracts the delay a provider asked the caller to wait before retrying, in ms,
+ * or `undefined` when the error states none. Both known encodings are scanned and
+ * the longest wins (`RetryInfo` truncates to whole seconds; the prose carries the
+ * fraction), then the result is padded and clamped to {@link MAX_SERVER_RETRY_DELAY_MS}
+ * so a malformed or hostile value cannot stall a turn indefinitely.
+ */
+export function extractServerRetryDelayMs(errorMessage: string | undefined): number | undefined {
+	if (!errorMessage) return undefined;
+	let seconds = 0;
+	for (const pattern of SERVER_RETRY_DELAY_PATTERNS) {
+		for (const match of errorMessage.matchAll(pattern)) {
+			const parsed = Number.parseFloat(match[1]);
+			if (Number.isFinite(parsed) && parsed > seconds) seconds = parsed;
+		}
+	}
+	if (seconds <= 0) return undefined;
+	return Math.min(Math.ceil(seconds * 1000) + SERVER_RETRY_DELAY_PAD_MS, MAX_SERVER_RETRY_DELAY_MS);
 }

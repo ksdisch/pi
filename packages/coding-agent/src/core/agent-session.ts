@@ -37,6 +37,7 @@ import type {
 import {
 	clampThinkingLevel,
 	cleanupSessionResources,
+	extractServerRetryDelayMs,
 	getSupportedThinkingLevels,
 	isContextOverflow,
 	isRecoverableLength,
@@ -2697,7 +2698,12 @@ export class AgentSession {
 			return false;
 		}
 
-		const delayMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		// Floor the exponential backoff at any delay the provider stated in the
+		// error itself (Google's RetryInfo / "Please retry in Ns"): a throttle
+		// window longer than the ladder would otherwise consume the whole retry
+		// budget from inside the window, where no attempt can succeed.
+		const backoffMs = settings.baseDelayMs * 2 ** (this._retryAttempt - 1);
+		const delayMs = Math.max(backoffMs, extractServerRetryDelayMs(message.errorMessage) ?? 0);
 
 		this._emit({
 			type: "auto_retry_start",

@@ -1,4 +1,5 @@
 import http from "node:http";
+import path from "node:path";
 
 /**
  * Tiny JSON-over-HTTP command server. Commands are serialized through a single
@@ -44,6 +45,50 @@ export function startServer(name, port, routes) {
 		console.log(`[${name}] listening on http://127.0.0.1:${port}`);
 	});
 	return server;
+}
+
+/**
+ * Spectator mode: `HEADED=1` opens real Chromium windows so Kyle can watch a run
+ * happen. Headless stays the default — the players never see pixels either way
+ * (DESIGN.md "Known limits"), so this changes nothing about what they perceive.
+ */
+export const launchOptions = () => ({ headless: process.env.HEADED !== "1" });
+
+/**
+ * `VIDEO_DIR` (set per run by run-pilot.sh) turns on Playwright's recorder, so a
+ * finished run is watchable after the fact even when nobody was at the screen.
+ */
+export function contextOptions(viewport) {
+	const dir = process.env.VIDEO_DIR;
+	return dir ? { viewport, recordVideo: { dir, size: viewport } } : { viewport };
+}
+
+/**
+ * Close the page's context so Playwright finalizes its video. Closing the whole
+ * browser here instead would drop the connection `saveAs` still needs, leaving
+ * the recording on disk under an unrecognizable `page@<hash>.webm` name.
+ */
+export async function closeForVideo(page) {
+	await page?.context().close().catch(() => {});
+}
+
+/**
+ * Flush a recorded video to a stable filename. Call after {@link closeForVideo}
+ * and before closing the browser.
+ */
+export async function saveVideo(video, name) {
+	const dir = process.env.VIDEO_DIR;
+	if (!video || !dir) return null;
+	const file = path.join(dir, `${name}.webm`);
+	try {
+		await video.saveAs(file);
+		// saveAs copies, so drop the `page@<hash>.webm` original — two identical
+		// recordings per run is just confusing.
+		await video.delete().catch(() => {});
+		return file;
+	} catch {
+		return null; // recorder never produced a file — not worth failing shutdown over
+	}
 }
 
 export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));

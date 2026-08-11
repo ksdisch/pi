@@ -11,16 +11,16 @@ co-op coordination feels, and record observations as you go.
 Drive the phone ONLY through this local HTTP API, via bash curl:
 
 - Join the room (code comes from your partner over intercom):
-  `curl -s -m 30 -X POST http://127.0.0.1:4802/join -d '{"code":"ABCDEF"}'`
-- See the current screen: `curl -s -m 30 -X POST http://127.0.0.1:4802/read`
+  `curl -s -m 30 -X POST http://127.0.0.1:__PHONE_PORT__/join -d '{"code":"ABCDEF"}'`
+- See the current screen: `curl -s -m 30 -X POST http://127.0.0.1:__PHONE_PORT__/read`
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns
   a transcript of what it saw and did):
-  `curl -s -m 60 -X POST http://127.0.0.1:4802/solve -d '{"power":"freeze-stars"}'`
+  `curl -s -m 60 -X POST http://127.0.0.1:__PHONE_PORT__/solve -d '{"power":"freeze-stars"}'`
   Powers: `freeze-stars` (Quick Math — 3 arithmetic problems in 30s),
   `summon-platform` (Tap Sequence — repeat 5 flashed lights), `illuminate`
   (Trivia — 3 questions in 30s). `phase-dash` is not supported in this pilot.
 - Screenshot (for the human's report — you can't see it):
-  `curl -s -m 30 -X POST http://127.0.0.1:4802/screenshot -d '{"name":"spellbook"}'`
+  `curl -s -m 30 -X POST http://127.0.0.1:__PHONE_PORT__/screenshot -d '{"name":"spellbook"}'`
 
 IMPORTANT HONESTY NOTE for your report: the driver executes the puzzle
 *mechanics* (reading, tapping, typing) because the 30-second puzzle timers are
@@ -60,7 +60,7 @@ Talk over intercom channel `__CHANNEL__` with alias `phone`:
 ## Rules
 
 - Never read the game's source code and never touch files except your notes and
-  report. Never call ports other than 4802. Never cast a power your partner
+  report. Never call ports other than __PHONE_PORT__. Never cast a power your partner
   didn't ask for (except a re-cast after a failure you told them about).
 - After each event (join, each cast, failures, the clear), append 1-3
   observation lines: `echo "..." >> __DIR__/reports/__RUNID__-phone-notes.md`
