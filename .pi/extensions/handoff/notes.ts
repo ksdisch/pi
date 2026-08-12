@@ -318,6 +318,21 @@ export function listArchivedNotePaths(cwd: string): string[] {
 }
 
 /**
+ * Archived notes written by `sessionId`, oldest first.
+ *
+ * Filenames embed the writer's session-id fragment, so this filters by name before opening
+ * anything: the retirement poll runs every ~30 s in every session, and parsing a whole
+ * archive that often to find at most a couple of own notes is the cost worth avoiding.
+ *
+ * The fragment is 8 characters, so a filename match is a candidate and not proof — callers
+ * still compare `session_id` in the parsed frontmatter.
+ */
+export function listArchivedNotePathsForSession(cwd: string, sessionId: string): string[] {
+	const suffix = `_${sessionId.slice(0, 8)}.md`;
+	return listArchivedNotePaths(cwd).filter((path) => path.endsWith(suffix));
+}
+
+/**
  * Was this note written by a *different* process that is still running?
  *
  * "Different" is load-bearing. pi's successor sessions run in-process — `/new` and
