@@ -621,16 +621,36 @@ channels go silent with messages preserved on disk (matches intercom's known lim
 Free-tier budget: one composer call per spawn against ~20/day, with the mechanical
 fallback keeping the chain alive when it throttles.
 
-### Verified how (planned)
+### Verified how
 
-`retire.ts` keeps pi imports type-only: unit tests for config parsing and the
-predicate, wiring tests against the fake `pi` (the `watcher-wiring.test.ts` pattern).
-Spawn-mode wiring tests assert the settle-only rule, the generation cap, and the
-compose-fallback. Live smokes in a scratch dir (`-e` with an absolute path, never the
-repo cwd), Gemini free tier: the in-process chain end-to-end at a low threshold, and a
-two-process retirement (one session consumes, the writer notifies/retires). Flagged
-unknowns to verify during the build: whether `-p` print mode's process outlives a
-spawned successor's run, and Warp's close-on-exit behavior for `exec`-rooted sessions.
+`retire.ts` keeps pi imports type-only, so both halves are unit-tested: `retire.test.ts`
+(env parsing, the predicate against synthetic frontmatter) and `retire-wiring.test.ts`
+(the poll's gate, the notify text, the `auto` grace and each of its three guards, digest
+suppression, teardown). Spawn-mode wiring tests assert the settle-only rule, the deferred
+spawn from the compaction path, the cap across two instances, the compose-fallback, and
+that a refused crossing never spends a compose call.
+
+**Live smoke, 2026-08-12** — `pi -p` in a scratch dir (`-e` with an absolute path, never
+the repo cwd, which holds live notes from concurrent sessions), Gemini free tier,
+`PI_HANDOFF_WATCH=spawn PI_HANDOFF_WATCH_AT=0.05 PI_HANDOFF_SPAWN_MAX=1`. The whole chain
+ran: the crossing wrote an LLM-composed `source: watch` note carrying a model-written
+kickoff, the successor started in-process, the reader delivered the briefing memo with
+that kickoff as its first turn, and the successor's own crossing was refused by the cap
+with the message it should give. The archived note came back stamped
+`consumed_by: 019ff82e-bf52…` — the retirement predicate's input, produced in the wild
+rather than by a test.
+
+**Flagged unknown, now answered:** `-p` print mode *does* outlive a spawned successor's
+run. The process stayed alive across the replacement and printed the successor's reply,
+so the autonomous chain works headlessly and not only in the TUI.
+
+**Not smoked live, and why:** a two-process retirement needs a session that stays alive
+for at least one 30 s poll while another consumes its note. `-p` exits the moment its
+prompt is answered, and the TUI path needs tmux, which the machine this was built on does
+not have. The wiring tests cover it end to end against a fake `pi`; what the live smoke
+adds is the confirmation above that real `consumed_by` stamps appear where the predicate
+expects them. Warp's close-on-exit behavior for `exec`-rooted sessions is likewise still
+one human observation away (see the `/launch` skill in `claude-config`).
 
 ## Explicitly out of scope for v1 (v2 hooks noted)
 
