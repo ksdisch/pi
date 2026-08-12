@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	archiveDir,
@@ -377,6 +377,14 @@ describe("archiveNote", () => {
 		expect(archiveNote(dir, path, { consumed_by: "first" })).toBe(true);
 		expect(archiveNote(dir, path, { consumed_by: "second" })).toBe(false);
 		expect(readNote(join(archiveDir(dir), path.split("/").pop() as string))?.frontmatter.consumed_by).toBe("first");
+	});
+
+	// Retirement derives a note's archived location from its pending one, so the move must
+	// keep the basename.
+	it("archives under the same filename it was pending under", () => {
+		const path = writeNote(dir, sampleNote());
+		archiveNote(dir, path, { consumed_by: "successor-id" });
+		expect(existsSync(join(archiveDir(dir), basename(path)))).toBe(true);
 	});
 
 	it("still archives a note whose frontmatter cannot be parsed", () => {

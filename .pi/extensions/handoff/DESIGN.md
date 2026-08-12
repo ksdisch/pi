@@ -522,10 +522,21 @@ The shutdown digest is unaffected: `newSession` fires `session_shutdown` with
 
 ### Retirement: `retire.ts`, `PI_HANDOFF_RETIRE`
 
-The predicate for "this session's work was for-sure picked up": **an archived note
-with `session_id` equal to the current session's id, carrying a `consumed_by` stamp.**
-`superseded_by` deliberately does not qualify — superseded means a newer note won the
-briefing slot, not that this session's work was ingested.
+The predicate for "this session's work was for-sure picked up": **the note `/handoff`
+wrote in this run, found in `archive/` carrying a `consumed_by` stamp that is not this
+session's own id.** `superseded_by` deliberately does not qualify — superseded means a
+newer note won the briefing slot, not that this session's work was ingested.
+
+Identity is the note, not the session id — a correction the build made (review F1, PR
+#18). The id looked sufficient and is not: ids outlive their process, since `pi -c`
+resumes through the id in the session file's header. Matching on the id alone therefore
+matches every note that id ever wrote, so a resumed session that hands off again would
+announce the handoff from its *previous* life and, under `auto`, exit while the note it
+just wrote sat pending and unread. The same gap admitted self-consumption: the shutdown
+digest writes a note as session A, `pi -c` restarts as A with `reason: "startup"`, and
+the reader ingests A's own pending note and stamps it `consumed_by: A` — "picked up
+elsewhere" satisfied by the session picking itself up. Hence both halves: the exact note
+path (`archive/` preserves the pending basename), and `consumed_by !== session_id`.
 
 A consequence worth stating: watch notes cannot drive cross-process retirement. The
 reader's liveness guard makes sibling processes *skip* a live writer's watch note, so
@@ -534,11 +545,20 @@ the predicate fires for `/handoff`-written notes — the deliberate cross-proces
 path — which is the right shape: retirement follows an intentional handoff, not a
 mid-session snapshot.
 
-- **Polling starts lazily:** only a session that wrote a note this session is a
-  candidate. A ~30 s `setInterval`, `unref()`ed and torn down on `session_shutdown` —
-  the intercom watcher's discipline. The scan is cheap: note filenames embed the
-  writer's session-id fragment, so it is one readdir plus frontmatter parses of
-  own-session files only.
+- **The timer is armed always; the check is what gates.** Every non-`off` session arms a
+  ~30 s `setInterval` at `session_start` — `unref()`ed and torn down on `session_shutdown`,
+  the intercom watcher's discipline — and each tick returns immediately unless `/handoff`
+  has recorded a note path. Arming lazily was the plan and is not implementable: the gate
+  opens mid-session when `/handoff` runs, and no event fires afterwards in the session
+  that most needs this (hand off, then sit idle while another window picks the note up).
+  A ticking no-op is the cost of not missing that case. When the gate is open the check
+  is one `readFile` of one known path — knowing the note means knowing where archiving
+  puts it — never a directory scan.
+- **Reported once per session.** The first consumed handoff stops the poll. A second
+  `/handoff` in the same session therefore goes unwatched — a known gap (review F9,
+  PR #18), not a design position: it costs one report in the rare
+  hand-off-twice-then-keep-working session, and the fix is to latch per note path
+  rather than per session.
 - **Modes** (same env parse-with-warn machinery as the watcher):
 
   | `PI_HANDOFF_RETIRE` | On predicate match |
