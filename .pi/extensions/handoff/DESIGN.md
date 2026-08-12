@@ -353,8 +353,10 @@ reasons that hold up:
   | `notify` | report the crossing; write nothing |
   | `propose` | TUI: 3-way select — write the note / compose via `/handoff` / not now |
   | `auto` (default) | write the note, report the path |
+  | `spawn` | compose the note, write it, then start the successor on its kickoff |
 
-  `PI_HANDOFF_WATCH_AT` is the percent, default 80. A value outside `(0, 100]` or an
+  `PI_HANDOFF_WATCH_AT` is the percent, default 80. `PI_HANDOFF_SPAWN_MAX` caps successor
+  spawns per process, default 10. A value outside `(0, 100]`, a non-integer cap, or an
   unknown mode falls back to the default **and warns once** — a typo that silently
   disables the watcher is the failure this exists to prevent.
 
