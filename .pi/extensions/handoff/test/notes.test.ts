@@ -11,7 +11,6 @@ import {
 	type HandoffNote,
 	handoffsDir,
 	isForeignWriterAlive,
-	listArchivedNotePathsForSession,
 	listPendingNotePaths,
 	noteFilename,
 	parseNote,
@@ -380,19 +379,12 @@ describe("archiveNote", () => {
 		expect(readNote(join(archiveDir(dir), path.split("/").pop() as string))?.frontmatter.consumed_by).toBe("first");
 	});
 
-	// Filenames carry the writer's session-id fragment, which is what lets the retirement
-	// poll find its own notes without parsing everyone else's.
-	it("lists only the archived notes whose filename carries a session's fragment", () => {
-		const mine = "019feda9-55bc-797d-8b97-4fe03f430270";
-		const theirs = "019fffff-0000-7000-8000-000000000000";
-		archiveNote(dir, writeNote(dir, sampleNote({ session_id: mine })), { consumed_by: theirs });
-		archiveNote(dir, writeNote(dir, sampleNote({ session_id: theirs, created: "2026-08-10T23:00:00.000Z" })), {
-			consumed_by: mine,
-		});
-
-		expect(listArchivedNotePathsForSession(dir, mine).map((path) => basename(path))).toEqual([
-			noteFilename("2026-08-10T22:15:00.000Z", mine),
-		]);
+	// Retirement derives a note's archived location from its pending one, so the move must
+	// keep the basename.
+	it("archives under the same filename it was pending under", () => {
+		const path = writeNote(dir, sampleNote());
+		archiveNote(dir, path, { consumed_by: "successor-id" });
+		expect(existsSync(join(archiveDir(dir), basename(path)))).toBe(true);
 	});
 
 	it("still archives a note whose frontmatter cannot be parsed", () => {

@@ -56,6 +56,13 @@ describe("isConsumedNote", () => {
 		expect(isConsumedNote(note({ consumed_by: OTHER }), WRITER)).toBe(true);
 	});
 
+	// A session id outlives its process (`pi -c` resumes through the id in the file header),
+	// so a session can meet its own note again after a restart — and the reader stamps notes
+	// it ingests at startup with its own id. "I picked up my own note" is nobody's cue to exit.
+	it("does not accept a note this session consumed itself", () => {
+		expect(isConsumedNote(note({ consumed_by: WRITER }), WRITER)).toBe(false);
+	});
+
 	it("ignores an unstamped note", () => {
 		expect(isConsumedNote(note(), WRITER)).toBe(false);
 	});
@@ -82,48 +89,50 @@ describe("findConsumedNote", () => {
 		rmSync(dir, { recursive: true, force: true });
 	});
 
-	/** Write a note and archive it with the given stamp, the way the reader does. */
-	function archived(overrides: Partial<HandoffNote["frontmatter"]>, stamp: Partial<HandoffNote["frontmatter"]>): void {
-		archiveNote(dir, writeNote(dir, note(overrides)), stamp);
+	/** Write a note the way `/handoff` does, and hand back the path it would record. */
+	function written(overrides: Partial<HandoffNote["frontmatter"]> = {}): string {
+		return writeNote(dir, note(overrides));
 	}
 
-	it("finds nothing in an empty cwd", () => {
-		expect(findConsumedNote(dir, WRITER)).toBeUndefined();
+	it("finds nothing when the note is still pending", () => {
+		expect(findConsumedNote(dir, written(), WRITER)).toBeUndefined();
 	});
 
-	it("finds our archived note once it carries a consumed_by stamp", () => {
-		archived({}, { consumed_by: OTHER, consumed_at: "2026-08-12T10:05:00.000Z" });
-		expect(findConsumedNote(dir, WRITER)?.note.frontmatter.consumed_by).toBe(OTHER);
-	});
-
-	// A pending note is one nobody has read yet — the state this session is waiting to leave.
-	it("ignores a note that is still pending", () => {
-		writeNote(dir, note());
-		expect(findConsumedNote(dir, WRITER)).toBeUndefined();
+	it("finds our note once it is archived with a consumed_by stamp", () => {
+		const path = written();
+		archiveNote(dir, path, { consumed_by: OTHER, consumed_at: "2026-08-12T10:05:00.000Z" });
+		expect(findConsumedNote(dir, path, WRITER)?.note.frontmatter.consumed_by).toBe(OTHER);
 	});
 
 	it("ignores a note archived as superseded", () => {
-		archived({}, { superseded_by: "newer.md" });
-		expect(findConsumedNote(dir, WRITER)).toBeUndefined();
+		const path = written();
+		archiveNote(dir, path, { superseded_by: "newer.md" });
+		expect(findConsumedNote(dir, path, WRITER)).toBeUndefined();
 	});
 
-	it("ignores another session's consumed note", () => {
-		archived({ session_id: OTHER }, { consumed_by: WRITER });
-		expect(findConsumedNote(dir, WRITER)).toBeUndefined();
+	it("ignores a note this session consumed itself", () => {
+		const path = written();
+		archiveNote(dir, path, { consumed_by: WRITER });
+		expect(findConsumedNote(dir, path, WRITER)).toBeUndefined();
 	});
 
-	// A session can hand off more than once; the last handoff is the one that ended its work.
-	it("returns the newest of several consumed notes", () => {
-		archived({ created: "2026-08-12T10:00:00.000Z" }, { consumed_by: "first-consumer" });
-		archived({ created: "2026-08-12T12:00:00.000Z" }, { consumed_by: "second-consumer" });
-		expect(findConsumedNote(dir, WRITER)?.note.frontmatter.consumed_by).toBe("second-consumer");
+	// Identity is the note, not the session id. A session id outlives its process, so an
+	// id-only match would fire on a handoff consumed in a previous life — announcing the wrong
+	// handoff, and under `auto` exiting while the note just written sat unread.
+	it("ignores an older consumed note from the same session id", () => {
+		const stale = written({ created: "2026-08-12T08:00:00.000Z" });
+		archiveNote(dir, stale, { consumed_by: OTHER });
+		const fresh = written({ created: "2026-08-12T12:00:00.000Z" });
+
+		expect(findConsumedNote(dir, fresh, WRITER)).toBeUndefined();
 	});
 
-	// Filenames carry only 8 characters of the writer's id, so the name filter is a
-	// pre-selection; the frontmatter comparison is what decides.
-	it("rejects a filename-fragment collision from a different session", () => {
+	// Basenames carry only 8 characters of the writer's id, so a same-millisecond collision
+	// between two sessions is conceivable; the frontmatter comparison is what decides.
+	it("rejects an archived note that is not ours despite the matching name", () => {
 		const collider = `${WRITER.slice(0, 8)}-3333-7000-8000-000000000003`;
-		archived({ session_id: collider }, { consumed_by: OTHER });
-		expect(findConsumedNote(dir, WRITER)).toBeUndefined();
+		const path = writeNote(dir, note({ session_id: collider }));
+		archiveNote(dir, path, { consumed_by: OTHER });
+		expect(findConsumedNote(dir, path, WRITER)).toBeUndefined();
 	});
 });

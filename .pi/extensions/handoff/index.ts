@@ -37,6 +37,12 @@ import { registerWatcher } from "./watcher.ts";
 export interface HandoffState {
 	/** Set by `/handoff`. Suppresses the shutdown digest, which would supersede a richer note. */
 	wroteNoteThisSession: boolean;
+	/**
+	 * Path of the note `/handoff` wrote in this run. Retirement watches this exact note rather
+	 * than "any note from this session id": ids outlive their process, so an id-only match would
+	 * also match notes consumed in a previous life of the same session.
+	 */
+	notePath?: string;
 }
 
 function modelLabel(ctx: ExtensionContext): string | undefined {
@@ -217,6 +223,7 @@ function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 			}
 
 			state.wroteNoteThisSession = true;
+			state.notePath = notePath;
 			ctx.ui.notify(`Handoff note written: ${notePath}`, "info");
 
 			if (ctx.mode !== "tui") return;
@@ -319,7 +326,7 @@ export default function (pi: ExtensionAPI) {
 	registerShutdownDigest(pi, state);
 	registerWatcher(pi, { handoffWritten: () => state.wroteNoteThisSession });
 	registerRetire(pi, {
-		noteWritten: () => state.wroteNoteThisSession,
+		handoffNotePath: () => state.notePath,
 		// The same flag /handoff sets, for the same reason: the note that was already consumed
 		// says everything this session's exit digest could.
 		suppressShutdownDigest: () => {

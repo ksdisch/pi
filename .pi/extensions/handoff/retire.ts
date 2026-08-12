@@ -20,8 +20,9 @@
  * on why `index.ts` is not).
  */
 
+import { basename, join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type HandoffNote, listArchivedNotePathsForSession, readNote } from "./notes.ts";
+import { archiveDir, type HandoffNote, readNote } from "./notes.ts";
 
 export type RetireMode = "off" | "notify" | "auto";
 
@@ -80,9 +81,18 @@ export function readRetireConfig(env: Record<string, string | undefined>): Retir
 	return { config: { mode }, warnings };
 }
 
-/** Was this note written by `sessionId` and then ingested by someone? */
+/**
+ * Was this note written by `sessionId` and then ingested by *someone else*?
+ *
+ * "Someone else" is load-bearing. A session id outlives its process — `pi -c` resumes
+ * through the id in the session-file header — so a session can meet its own note again
+ * after a restart, and the reader ingests pending notes on `reason: "startup"` and stamps
+ * them with the id of the session doing the reading. That stamp reads as "consumed" while
+ * meaning "I picked up my own note", which is not a reason for anyone to retire.
+ */
 export function isConsumedNote(note: HandoffNote, sessionId: string): boolean {
-	return note.frontmatter.session_id === sessionId && (note.frontmatter.consumed_by ?? "") !== "";
+	const consumedBy = note.frontmatter.consumed_by ?? "";
+	return note.frontmatter.session_id === sessionId && consumedBy !== "" && consumedBy !== sessionId;
 }
 
 export interface ConsumedNote {
@@ -91,26 +101,27 @@ export interface ConsumedNote {
 }
 
 /**
- * The newest archived note this session wrote that carries a `consumed_by` stamp.
+ * Has *this* note — the one `/handoff` wrote in this run — been archived as consumed?
  *
- * Newest, because a session can hand off more than once; the last one is the handoff that
- * actually ended its work.
+ * Identity is the note, not the session id. Matching on the id alone would match every note
+ * the id ever wrote, including ones consumed in a previous life of the same session: a
+ * resumed session that hands off would announce the *old* handoff, and under `auto` exit
+ * while the note it just wrote sat unread. Archiving preserves the basename, so the note's
+ * archived location is derivable from its pending one.
  */
-export function findConsumedNote(cwd: string, sessionId: string): ConsumedNote | undefined {
-	const paths = listArchivedNotePathsForSession(cwd, sessionId);
-	for (let i = paths.length - 1; i >= 0; i--) {
-		const note = readNote(paths[i]);
-		if (note && isConsumedNote(note, sessionId)) return { path: paths[i], note };
-	}
-	return undefined;
+export function findConsumedNote(cwd: string, notePath: string, sessionId: string): ConsumedNote | undefined {
+	const archived = join(archiveDir(cwd), basename(notePath));
+	const note = readNote(archived);
+	return note && isConsumedNote(note, sessionId) ? { path: archived, note } : undefined;
 }
 
 export interface RetireDeps {
 	/**
-	 * True once this session wrote a handoff note. Only such a session can have a note to be
-	 * consumed, so this gates the scan: sessions that never hand off do no filesystem work.
+	 * Path of the note `/handoff` wrote this run, or undefined if it has not run. Only such a
+	 * session has a note that can be consumed, so this gates the scan: sessions that never
+	 * hand off do no filesystem work.
 	 */
-	noteWritten: () => boolean;
+	handoffNotePath: () => string | undefined;
 	/**
 	 * Set the flag that stops the shutdown digest from writing. Without it, a retiring
 	 * session's exit would drop a fresh pending note re-advertising work that was already
@@ -200,9 +211,10 @@ export function registerRetire(pi: ExtensionAPI, deps: RetireDeps): void {
 	}
 
 	function tick(): void {
-		if (!ctx || reported || !deps.noteWritten()) return;
+		const notePath = deps.handoffNotePath();
+		if (!ctx || reported || !notePath) return;
 		try {
-			const consumed = findConsumedNote(ctx.cwd, ctx.sessionManager.getSessionId());
+			const consumed = findConsumedNote(ctx.cwd, notePath, ctx.sessionManager.getSessionId());
 			if (!consumed) return;
 			reported = true;
 			stop();

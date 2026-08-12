@@ -28,8 +28,8 @@ function entryAt(timestamp: string): SessionEntry {
 
 interface HarnessOptions {
 	env?: Record<string, string | undefined>;
-	/** Whether this session has written a handoff note yet. Mutable through `writeNote()`. */
-	noteWritten?: boolean;
+	/** Path of the note `/handoff` wrote this run. Mutable through `handedOff()`. */
+	notePath?: string;
 	sessionId?: string;
 	idle?: boolean;
 	pendingMessages?: boolean;
@@ -45,7 +45,7 @@ interface HarnessOptions {
 function harness(cwd: string, options: HarnessOptions = {}) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => unknown>();
 	const notifications: Notification[] = [];
-	let noteWritten = options.noteWritten ?? false;
+	let notePath = options.notePath;
 	let shutdowns = 0;
 	let digestSuppressed = false;
 
@@ -74,7 +74,7 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 	} as unknown as ExtensionContext;
 
 	registerRetire(pi, {
-		noteWritten: () => noteWritten,
+		handoffNotePath: () => notePath,
 		suppressShutdownDigest: () => {
 			digestSuppressed = true;
 		},
@@ -87,9 +87,9 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 		digestSuppressed: () => digestSuppressed,
 		start: (reason = "startup") => handlers.get("session_start")?.({ type: "session_start", reason }, ctx),
 		shutdown: (reason = "quit") => handlers.get("session_shutdown")?.({ type: "session_shutdown", reason }, ctx),
-		/** Stand in for `/handoff` having run: a note of ours now exists. */
-		handedOff: () => {
-			noteWritten = true;
+		/** Stand in for `/handoff` having run: it recorded the note it just wrote. */
+		handedOff: (path: string) => {
+			notePath = path;
 		},
 		poll: async (times = 1) => {
 			await vi.advanceTimersByTimeAsync(POLL_MS * times);
@@ -100,20 +100,25 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 	};
 }
 
-/** Write a note as `sessionId` and archive it with the given stamp, the way the reader does. */
-function archivedNote(cwd: string, sessionId: string, stamp: Partial<HandoffNote["frontmatter"]>): void {
+/** Write a pending note the way `/handoff` does; returns the path it would record. */
+function pendingNote(cwd: string, sessionId = WRITER, created = NOTE_CREATED): string {
 	const note: HandoffNote = {
 		frontmatter: {
 			schema: HANDOFF_SCHEMA,
 			session_id: sessionId,
 			cwd,
-			created: NOTE_CREATED,
+			created,
 			source: "command",
 			kickoff: "Continue the retirement build",
 		},
 		body: "## Context\nHanded off.\n",
 	};
-	archiveNote(cwd, writeNote(cwd, note), stamp);
+	return writeNote(cwd, note);
+}
+
+/** Someone else picked the note up: archived and stamped, the way the reader does it. */
+function consume(cwd: string, path: string, consumedBy = CONSUMER): void {
+	archiveNote(cwd, path, { consumed_by: consumedBy, consumed_at: "2026-08-12T10:05:00.000Z" });
 }
 
 let dir: string;
@@ -132,8 +137,9 @@ describe("retirement wiring", () => {
 	it("reports once its own note has been consumed", async () => {
 		const h = harness(dir);
 		h.start();
-		h.handedOff();
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER, consumed_at: "2026-08-12T10:05:00.000Z" });
+		const path = pendingNote(dir);
+		h.handedOff(path);
+		consume(dir, path);
 
 		await h.poll();
 		expect(h.notifications).toHaveLength(1);
@@ -147,8 +153,9 @@ describe("retirement wiring", () => {
 	it("reports only once", async () => {
 		const h = harness(dir);
 		h.start();
-		h.handedOff();
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
+		const path = pendingNote(dir);
+		h.handedOff(path);
+		consume(dir, path);
 
 		await h.poll(5);
 		expect(h.notifications).toHaveLength(1);
@@ -159,48 +166,63 @@ describe("retirement wiring", () => {
 	it("stays quiet until this session has written a note", async () => {
 		const h = harness(dir);
 		h.start();
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
+		const path = pendingNote(dir);
+		consume(dir, path);
 
 		await h.poll(3);
 		expect(h.notifications).toHaveLength(0);
 
-		h.handedOff();
+		h.handedOff(path);
 		await h.poll();
 		expect(h.notifications).toHaveLength(1);
 	});
 
 	it("stays quiet while its note is still pending", async () => {
-		const h = harness(dir, { noteWritten: true });
+		const h = harness(dir, { notePath: pendingNote(dir) });
 		h.start();
-		writeNote(dir, {
-			frontmatter: {
-				schema: HANDOFF_SCHEMA,
-				session_id: WRITER,
-				cwd: dir,
-				created: NOTE_CREATED,
-				source: "command",
-				kickoff: "Continue",
-			},
-			body: "## Context\nStill waiting.\n",
-		});
 
 		await h.poll(3);
 		expect(h.notifications).toHaveLength(0);
 	});
 
 	it("ignores another session's consumed note", async () => {
-		const h = harness(dir, { noteWritten: true });
+		const h = harness(dir, { notePath: pendingNote(dir) });
 		h.start();
-		archivedNote(dir, CONSUMER, { consumed_by: WRITER });
+		consume(dir, pendingNote(dir, CONSUMER), WRITER);
+
+		await h.poll(3);
+		expect(h.notifications).toHaveLength(0);
+	});
+
+	// Identity is the note, not the session id: ids outlive their process, so a resumed
+	// session that hands off again must not fire on the handoff it made in a previous life.
+	it("ignores an older consumed note carrying this session's id", async () => {
+		const stale = pendingNote(dir, WRITER, "2026-08-12T08:00:00.000Z");
+		consume(dir, stale);
+		const h = harness(dir, { notePath: pendingNote(dir) });
+		h.start();
+
+		await h.poll(3);
+		expect(h.notifications).toHaveLength(0);
+	});
+
+	// The reader stamps notes it ingests at startup with its own session id, so a resumed
+	// session can end up as its own note's consumer. That is nobody's cue to exit.
+	it("ignores a note this session consumed itself", async () => {
+		const path = pendingNote(dir);
+		consume(dir, path, WRITER);
+		const h = harness(dir, { notePath: path });
+		h.start();
 
 		await h.poll(3);
 		expect(h.notifications).toHaveLength(0);
 	});
 
 	it("never polls when retirement is off", async () => {
-		const h = harness(dir, { env: { [MODE_ENV]: "off" }, noteWritten: true });
+		const path = pendingNote(dir);
+		consume(dir, path);
+		const h = harness(dir, { env: { [MODE_ENV]: "off" }, notePath: path });
 		h.start();
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
 
 		await h.poll(3);
 		expect(h.notifications).toHaveLength(0);
@@ -209,20 +231,22 @@ describe("retirement wiring", () => {
 	// session_shutdown fires for reload/new/resume/fork as well as quit — every path that
 	// replaces this extension instance. A leaked interval would outlive its runtime.
 	it("tears the poll down on shutdown", async () => {
-		const h = harness(dir, { noteWritten: true });
+		const path = pendingNote(dir);
+		const h = harness(dir, { notePath: path });
 		h.start();
 		h.shutdown("new");
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
+		consume(dir, path);
 
 		await h.poll(3);
 		expect(h.notifications).toHaveLength(0);
 	});
 
 	it("arms exactly one poll across repeated session starts", async () => {
-		const h = harness(dir, { noteWritten: true });
+		const path = pendingNote(dir);
+		const h = harness(dir, { notePath: path });
 		h.start();
 		h.start("new");
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
+		consume(dir, path);
 
 		await h.poll();
 		expect(h.notifications).toHaveLength(1);
@@ -240,15 +264,21 @@ describe("retirement wiring", () => {
 
 describe("retirement auto mode", () => {
 	/** Detect the consumed note and arm the grace timer. */
-	async function detect(h: ReturnType<typeof harness>): Promise<void> {
+	async function detect(h: ReturnType<typeof harness>, path: string): Promise<void> {
 		h.start();
-		archivedNote(dir, WRITER, { consumed_by: CONSUMER });
+		consume(dir, path);
 		await h.poll();
 	}
 
+	/** An auto-mode session that has handed off, plus the path of the note it wrote. */
+	function armed(options: Omit<HarnessOptions, "env" | "notePath"> = {}) {
+		const path = pendingNote(dir);
+		return { h: harness(dir, { env: AUTO, notePath: path, ...options }), path };
+	}
+
 	it("shuts the session down after the grace period", async () => {
-		const h = harness(dir, { env: AUTO, noteWritten: true });
-		await detect(h);
+		const { h, path } = armed();
+		await detect(h, path);
 
 		// The announcement is the whole warning; nothing has happened yet.
 		expect(h.shutdowns()).toBe(0);
@@ -262,8 +292,8 @@ describe("retirement auto mode", () => {
 	// Otherwise the exit drops a fresh pending note re-advertising work that was already
 	// picked up, and the next session ingests its own predecessor's ghost.
 	it("suppresses the shutdown digest before exiting", async () => {
-		const h = harness(dir, { env: AUTO, noteWritten: true });
-		await detect(h);
+		const { h, path } = armed();
+		await detect(h, path);
 		expect(h.digestSuppressed()).toBe(false);
 
 		await h.grace();
@@ -271,8 +301,9 @@ describe("retirement auto mode", () => {
 	});
 
 	it("notifies but never exits in the default mode", async () => {
-		const h = harness(dir, { noteWritten: true });
-		await detect(h);
+		const path = pendingNote(dir);
+		const h = harness(dir, { notePath: path });
+		await detect(h, path);
 		await h.grace();
 
 		expect(h.notifications).toHaveLength(1);
@@ -286,8 +317,8 @@ describe("retirement auto mode", () => {
 		["messages are queued", { pendingMessages: true }],
 		["the session worked after the note was written", { entries: [entryAt("2026-08-12T11:00:00.000Z")] }],
 	])("downgrades to notify when %s", async (_label, guard) => {
-		const h = harness(dir, { env: AUTO, noteWritten: true, ...guard });
-		await detect(h);
+		const { h, path } = armed(guard);
+		await detect(h, path);
 		await h.grace();
 
 		expect(h.shutdowns()).toBe(0);
@@ -297,8 +328,8 @@ describe("retirement auto mode", () => {
 
 	// Work that predates the handoff is what the note already describes.
 	it("retires despite session entries older than the note", async () => {
-		const h = harness(dir, { env: AUTO, noteWritten: true, entries: [entryAt("2026-08-12T09:00:00.000Z")] });
-		await detect(h);
+		const { h, path } = armed({ entries: [entryAt("2026-08-12T09:00:00.000Z")] });
+		await detect(h, path);
 		await h.grace();
 
 		expect(h.shutdowns()).toBe(1);
@@ -307,8 +338,8 @@ describe("retirement auto mode", () => {
 	// A quit during the grace window is the user retiring the session themselves; the timer
 	// must not fire into a torn-down runtime afterwards.
 	it("cancels the pending retirement when the session shuts down first", async () => {
-		const h = harness(dir, { env: AUTO, noteWritten: true });
-		await detect(h);
+		const { h, path } = armed();
+		await detect(h, path);
 		h.shutdown();
 		await h.grace();
 
