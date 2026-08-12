@@ -28,6 +28,45 @@ boot || { echo "boot/pairing failed"; exit 1; }
 # perceptual — the clear below doesn't depend on it).
 solve illuminate | python3 -c 'import sys,json;d=json.load(sys.stdin);print("illuminate:",d["solved"],[t["question"][:40] for t in d["transcript"]])'
 
+# Armed-move check: pre-commit a short dash on the freeze trigger, cast freeze
+# after a beat, and confirm the driver held the move until the cast landed
+# (arm-fired) instead of timing out. The dash stays in the safe zone left of
+# the sentry patrol (~280+); walk back after so the attempts start spawn-side.
+armed_out=$(mktemp)
+curl -s -m 60 -X POST $L/move -d '{"arm":{"on":"freeze","timeoutMs":30000},"dir":"right","ms":1000,"untilX":240}' >"$armed_out" &
+armed_pid=$!
+sleep 2
+solve freeze-stars | python3 -c 'import sys,json;print("armed-check freeze:",json.load(sys.stdin)["solved"])'
+wait "$armed_pid"
+amv=$(cat "$armed_out")
+rm -f "$armed_out"
+echo "armed dash: $(echo "$amv" | pp) armedForMs=$(echo "$amv" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("armedForMs"))')"
+echo "$amv" | grep -q arm-fired || { echo "armed move did not fire on the cast — rails NOT verified"; exit 1; }
+# Retreat before the long platform check below: the dash overshoots untilX by
+# up to ~14px, which can rest inside the sentry's reach (starts ~248), and the
+# next block stands still unfrozen for 15-30s. x=150 is 130px clear.
+move '{"dir":"left","ms":2500,"untilX":150}' >/dev/null
+
+# Platform trigger, in its hardest shape: arm while a platform is still ALIVE
+# (the trigger's floor starts at 1), let it expire, re-cast, and confirm the
+# rising edge fires from the lowered floor. A fixed arm-time baseline fails
+# this exact sequence. The summoned platforms drop far away (~770); the
+# stationary arm at ~150 never touches them, and no patrol reaches it.
+solve summon-platform | python3 -c 'import sys,json;print("armed-check platform pre-cast:",json.load(sys.stdin)["solved"])'
+armed_out=$(mktemp)
+curl -s -m 60 -X POST $L/move -d '{"arm":{"on":"platform","timeoutMs":30000},"dir":"none","ms":300}' >"$armed_out" &
+armed_pid=$!
+sleep 6
+solve summon-platform | python3 -c 'import sys,json;print("armed-check platform re-cast:",json.load(sys.stdin)["solved"])'
+wait "$armed_pid"
+amv=$(cat "$armed_out")
+rm -f "$armed_out"
+echo "armed platform: $(echo "$amv" | pp) armedForMs=$(echo "$amv" | python3 -c 'import sys,json;print(json.load(sys.stdin).get("armedForMs"))')"
+echo "$amv" | grep -q arm-fired || { echo "armed platform trigger did not fire on the re-cast — rails NOT verified"; exit 1; }
+# Let the re-cast platform expire (5s lifetime) so attempt 1's own summon
+# isn't swallowed by the game's one-live-platform cap.
+sleep 4
+
 for attempt in 1 2 3 4 5 6; do
 	echo "=== attempt $attempt"
 	# freeze the sentry (patrols ~280-560), dash from spawn, park at 620 (safe: pit lip at ~640)

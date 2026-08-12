@@ -15,6 +15,22 @@ const VIEWPORT = { width: 960, height: 600 };
  * exception — common.mjs deliberately runs it off the chain.)
  */
 const MOVE_HARD_CAP_MS = 15_000;
+/**
+ * Armed moves: how long /move will hold a pre-committed maneuver waiting for
+ * its trigger — the default AND the ceiling; callers can only tighten it, like
+ * maxMs. It covers a partner turn plus one per-minute 429 backoff (~60s stated
+ * + pad), and it must stay under the curl deadline the player prompt hands out
+ * (120s): a hold that outlives its client wedges the seat's serial command
+ * chain behind a call nobody is waiting on.
+ */
+const ARM_TIMEOUT_MAX_MS = 90_000;
+/**
+ * Fixed pause between an armed trigger firing and the move starting. Models a
+ * poised human's reaction (~200ms) and is deliberately not caller-tunable: the
+ * harness plays at human anticipation speed, never frame-perfect script speed
+ * (DESIGN.md honesty rules).
+ */
+const ARM_REACTION_MS = 200;
 
 let browser = null;
 let page = null;
@@ -80,7 +96,10 @@ const routes = {
 			// `page@<hash>.webm` (see `closeForVideo` in common.mjs). Repeated failed
 			// boots overwrite the file; the last failure is the one worth watching.
 			const video = page?.video() ?? null;
-			await closeForVideo(page);
+			// Bounded: /boot runs on the serial command chain and every other wait on
+			// this path has a cap — a close that hangs finalizing the webm must not
+			// wedge every later command behind a boot that already failed.
+			await Promise.race([closeForVideo(page), sleep(5_000)]);
 			await saveVideo(video, "laptop-boot-failed");
 			await browser?.close().catch(() => {});
 			browser = null;
@@ -119,6 +138,14 @@ const routes = {
 	 * `hop` bunny-hops on a fixed cadence; `jumpAtX` jumps exactly once when
 	 * crossing that x (how a human takes a gap: jump at the lip, not on a timer).
 	 * Stops on: won, a respawn (death), reaching untilX, or ms elapsed.
+	 *
+	 * `arm` pre-commits the whole maneuver on a partner's cast: the astronaut
+	 * stands still until the trigger fires — "freeze" = enemyFrozen is on,
+	 * "platform" = platformCount rises above the lowest count seen since
+	 * arming — then waits one
+	 * human reaction (ARM_REACTION_MS) and runs the move. The wait aborts without
+	 * moving on death, win, or arm.timeoutMs; an armed player is still a
+	 * stationary target, and that exposure is playtest data, not a bug.
 	 */
 	"/move": async ({
 		dir = "none",
@@ -127,23 +154,71 @@ const routes = {
 		jumpAtX = null,
 		untilX = null,
 		maxMs = MOVE_HARD_CAP_MS,
+		arm = null,
 	} = {}) => {
 		const p = requireBooted();
 		if (!["right", "left", "none"].includes(dir)) throw new Error(`bad dir "${dir}"`);
+		if (arm != null && !["freeze", "platform"].includes(arm.on)) {
+			throw new Error(`bad arm.on "${arm?.on}" — use "freeze" or "platform"`);
+		}
 		// `maxMs` is caller-supplied, so it can only tighten the cap, never raise it.
 		const budget = Math.min(Number(ms) || 0, Number(maxMs) || MOVE_HARD_CAP_MS, MOVE_HARD_CAP_MS);
+		// Same rule for arm.timeoutMs against its ceiling; the reaction delay is
+		// pinned here so a caller can never tune it down to script speed.
+		const armOpts =
+			arm == null
+				? null
+				: {
+						on: arm.on,
+						timeoutMs: Math.min(Number(arm.timeoutMs) || ARM_TIMEOUT_MAX_MS, ARM_TIMEOUT_MAX_MS),
+						reactionMs: ARM_REACTION_MS,
+					};
 		const result = await p.evaluate(
 			async (opts) => {
 				const b = window.__constellation;
 				const pause = (t) => new Promise((r) => setTimeout(r, t));
-				const start = b.getState();
+				let start = b.getState();
+				const before = { x: Math.round(start.astronautX), y: Math.round(start.astronautY) };
 				b.resetInput();
+				const events = [];
+				let armedForMs = null;
+				if (opts.arm) {
+					// "freeze" fires on the level (a human who sees the enemy already
+					// frozen just goes). "platform" fires on the count rising above the
+					// LOWEST count seen since arming, not a fixed arm-time baseline: the
+					// game caps live platforms at one, so a fixed baseline of 1 could
+					// never fire again — expiry drops the count to 0 and a fresh cast
+					// only returns it to 1. The floor tracks the expiry down.
+					let floorPlatforms = start.platformCount;
+					const ta = performance.now();
+					for (;;) {
+						await pause(60);
+						const s = b.getState();
+						const t = performance.now() - ta;
+						const fired = opts.arm.on === "freeze" ? s.enemyFrozen : s.platformCount > floorPlatforms;
+						if (fired) {
+							events.push("arm-fired");
+							armedForMs = Math.round(t);
+							await pause(opts.arm.reactionMs);
+							// Re-baseline so the move loop's respawn check measures the
+							// move, not deaths that already aborted the wait.
+							start = b.getState();
+							break;
+						}
+						if (s.won || s.respawnCount > start.respawnCount || t >= opts.arm.timeoutMs) {
+							events.push(
+								s.won ? "won" : s.respawnCount > start.respawnCount ? "respawned-while-armed" : "arm-timeout",
+							);
+							return { events, before, after: s, elapsedMs: 0, armedForMs: Math.round(t) };
+						}
+						floorPlatforms = Math.min(floorPlatforms, s.platformCount);
+					}
+				}
 				if (opts.dir === "right") b.input.right = true;
 				if (opts.dir === "left") b.input.left = true;
 				const t0 = performance.now();
 				let lastHop = -1_000;
 				let jumped = false;
-				const events = [];
 				let s = start;
 				for (;;) {
 					await pause(60);
@@ -193,14 +268,22 @@ const routes = {
 				b.resetInput();
 				return {
 					events,
-					before: { x: Math.round(start.astronautX), y: Math.round(start.astronautY) },
+					before,
 					after: s,
 					elapsedMs: Math.round(performance.now() - t0),
+					armedForMs,
 				};
 			},
-			{ dir, hop, jumpAtX, untilX, budget },
+			{ dir, hop, jumpAtX, untilX, budget, arm: armOpts },
 		);
-		return { events: result.events, before: result.before, elapsedMs: result.elapsedMs, state: compact(result.after) };
+		const reply = {
+			events: result.events,
+			before: result.before,
+			elapsedMs: result.elapsedMs,
+			state: compact(result.after),
+		};
+		if (armOpts) reply.armedForMs = result.armedForMs;
+		return reply;
 	},
 
 	"/screenshot": async ({ name = "shot" } = {}) => {
