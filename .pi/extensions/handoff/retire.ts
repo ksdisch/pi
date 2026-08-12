@@ -43,6 +43,14 @@ export const MODE_ENV = "PI_HANDOFF_RETIRE";
  */
 export const POLL_MS = 30_000;
 
+/**
+ * How long `auto` waits between announcing the retirement and performing it.
+ *
+ * Not a formality: the announcement is the only warning anyone gets, and a session that
+ * turns out to be mid-something during the wait keeps its life (see the guards at expiry).
+ */
+export const GRACE_MS = 30_000;
+
 export interface RetireConfig {
 	mode: RetireMode;
 }
@@ -103,6 +111,12 @@ export interface RetireDeps {
 	 * consumed, so this gates the scan: sessions that never hand off do no filesystem work.
 	 */
 	noteWritten: () => boolean;
+	/**
+	 * Set the flag that stops the shutdown digest from writing. Without it, a retiring
+	 * session's exit would drop a fresh pending note re-advertising work that was already
+	 * picked up, and the next session would ingest its own predecessor's ghost.
+	 */
+	suppressShutdownDigest: () => void;
 	/** Defaults to `process.env`. */
 	env?: Record<string, string | undefined>;
 }
@@ -111,6 +125,24 @@ function report(ctx: ExtensionContext, message: string, level: "info" | "warning
 	if (ctx.hasUI) ctx.ui.notify(message, level);
 	// Headless modes have no notification surface; stderr keeps `-p` stdout clean.
 	else console.error(message);
+}
+
+/**
+ * Did anything happen in this session after the note was written?
+ *
+ * A session that kept working after handing off has outgrown its note: the successor was
+ * briefed on a stopping point this session then walked past, so exiting here would throw
+ * away work nobody else has. An unreadable timestamp counts as activity — the guard's whole
+ * job is to refuse in the dark.
+ */
+function hasActivitySince(ctx: ExtensionContext, created: string): boolean {
+	const noteAt = Date.parse(created);
+	if (!Number.isFinite(noteAt)) return true;
+	const entries = ctx.sessionManager.getBranch();
+	const last = entries[entries.length - 1];
+	if (!last) return false;
+	const lastAt = Date.parse(last.timestamp);
+	return !Number.isFinite(lastAt) || lastAt > noteAt;
 }
 
 /**
@@ -134,10 +166,37 @@ export function registerRetire(pi: ExtensionAPI, deps: RetireDeps): void {
 	let ctx: ExtensionContext | undefined;
 	/** The predicate stays true once it fires; report it once, then stop looking. */
 	let reported = false;
+	let grace: ReturnType<typeof setTimeout> | undefined;
 
 	function stop(): void {
 		if (timer) clearInterval(timer);
 		timer = undefined;
+		if (grace) clearTimeout(grace);
+		grace = undefined;
+	}
+
+	/**
+	 * Perform the retirement, unless the session turned out to still be busy.
+	 *
+	 * All three guards are re-read here rather than at detection: the grace window exists
+	 * precisely so that a session which comes back to life during it gets to keep living.
+	 */
+	function retire(note: HandoffNote): void {
+		grace = undefined;
+		if (!ctx) return;
+		try {
+			if (!ctx.isIdle() || ctx.hasPendingMessages() || hasActivitySince(ctx, note.frontmatter.created)) {
+				report(ctx, "Handoff was consumed elsewhere, but this session is still working; staying up.", "info");
+				return;
+			}
+			// Before shutdown, not after: `shutdown()` is what emits `session_shutdown`, and the
+			// digest handler reads the flag synchronously from it.
+			deps.suppressShutdownDigest();
+			report(ctx, "Retiring: this session's handoff was consumed elsewhere.", "info");
+			ctx.shutdown();
+		} catch (err) {
+			report(ctx, `Handoff retirement failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+		}
 	}
 
 	function tick(): void {
@@ -149,6 +208,10 @@ export function registerRetire(pi: ExtensionAPI, deps: RetireDeps): void {
 			stop();
 			const by = (consumed.note.frontmatter.consumed_by ?? "").slice(0, 8);
 			report(ctx, `Handoff consumed by session ${by}; this session can retire.`, "info");
+			if (config.mode !== "auto") return;
+			const note = consumed.note;
+			grace = setTimeout(() => retire(note), GRACE_MS);
+			grace.unref();
 		} catch (err) {
 			// A throwing interval callback is an unhandled exception, which would take pi down
 			// over a bookkeeping poll. Report and stand down instead.

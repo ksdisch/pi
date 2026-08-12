@@ -318,5 +318,12 @@ export default function (pi: ExtensionAPI) {
 	registerGhostTool(pi);
 	registerShutdownDigest(pi, state);
 	registerWatcher(pi, { handoffWritten: () => state.wroteNoteThisSession });
-	registerRetire(pi, { noteWritten: () => state.wroteNoteThisSession });
+	registerRetire(pi, {
+		noteWritten: () => state.wroteNoteThisSession,
+		// The same flag /handoff sets, for the same reason: the note that was already consumed
+		// says everything this session's exit digest could.
+		suppressShutdownDigest: () => {
+			state.wroteNoteThisSession = true;
+		},
+	});
 }
