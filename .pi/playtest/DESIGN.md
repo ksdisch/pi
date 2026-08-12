@@ -57,10 +57,13 @@ puzzle, exactly like a human pair. (The bridge's `cast()` would silently bypass
 the partner — that's a solo-verification affordance, not a co-op one.)
 
 **Armed moves — the one latency affordance.** `/move` takes an optional
-`arm: {on: "freeze"|"platform", timeoutMs}`: the astronaut stands still until
-the trigger fires (`enemyFrozen` on; `platformCount` rising above its arm-time
-value), waits a fixed ~200ms human-reaction pause, then runs the pre-committed
-move. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
+`arm: {on: "freeze"|"platform", timeoutMs}` (`timeoutMs` only tightens the 90s
+ceiling, mirroring `maxMs` — a hold that outlived the caller's curl deadline
+would wedge the seat's serial command chain): the astronaut stands still until
+the trigger fires (`enemyFrozen` on; `platformCount` rising above the lowest
+count seen since arming — the game caps live platforms at one, so a fixed
+arm-time baseline could never fire after a re-arm), waits a fixed ~200ms
+human-reaction pause, then runs the pre-committed move. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
 pair invented the right "GO" protocol and still lost, because a ~3s freeze
 window cannot contain a ~12s+ LLM turn, so the harness was effectively
 playtesting with a reaction time no human has. Why it is still honest: it is

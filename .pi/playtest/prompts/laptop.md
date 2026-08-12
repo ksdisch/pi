@@ -27,7 +27,7 @@ whole maneuver — never busy-loop.
   x/y before, and the full state after.
 - Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
   INSTANT your partner's cast lands, instead of a whole chat turn later:
-  `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":4000,"untilX":620}'`
+  `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":3000}'`
   `arm.on` = "freeze" (fires when the enemy is frozen) or "platform" (fires when
   a new platform appears). You stand still while armed; the driver waits up to
   90s (`arm.timeoutMs` to shorten), pauses ~0.2s (a human reaction), then runs

@@ -17,12 +17,13 @@ const VIEWPORT = { width: 960, height: 600 };
 const MOVE_HARD_CAP_MS = 15_000;
 /**
  * Armed moves: how long /move will hold a pre-committed maneuver waiting for
- * its trigger. The default covers a partner turn plus one per-minute 429
- * backoff (~60s stated + pad); the cap keeps a forgotten arm from wedging the
- * command chain for good.
+ * its trigger — the default AND the ceiling; callers can only tighten it, like
+ * maxMs. It covers a partner turn plus one per-minute 429 backoff (~60s stated
+ * + pad), and it must stay under the curl deadline the player prompt hands out
+ * (120s): a hold that outlives its client wedges the seat's serial command
+ * chain behind a call nobody is waiting on.
  */
-const ARM_TIMEOUT_DEFAULT_MS = 90_000;
-const ARM_TIMEOUT_CAP_MS = 180_000;
+const ARM_TIMEOUT_MAX_MS = 90_000;
 /**
  * Fixed pause between an armed trigger firing and the move starting. Models a
  * poised human's reaction (~200ms) and is deliberately not caller-tunable: the
@@ -161,14 +162,14 @@ const routes = {
 		}
 		// `maxMs` is caller-supplied, so it can only tighten the cap, never raise it.
 		const budget = Math.min(Number(ms) || 0, Number(maxMs) || MOVE_HARD_CAP_MS, MOVE_HARD_CAP_MS);
-		// Same rule for arm.timeoutMs against its own cap; the reaction delay is
+		// Same rule for arm.timeoutMs against its ceiling; the reaction delay is
 		// pinned here so a caller can never tune it down to script speed.
 		const armOpts =
 			arm == null
 				? null
 				: {
 						on: arm.on,
-						timeoutMs: Math.min(Number(arm.timeoutMs) || ARM_TIMEOUT_DEFAULT_MS, ARM_TIMEOUT_CAP_MS),
+						timeoutMs: Math.min(Number(arm.timeoutMs) || ARM_TIMEOUT_MAX_MS, ARM_TIMEOUT_MAX_MS),
 						reactionMs: ARM_REACTION_MS,
 					};
 		const result = await p.evaluate(
@@ -182,14 +183,18 @@ const routes = {
 				let armedForMs = null;
 				if (opts.arm) {
 					// "freeze" fires on the level (a human who sees the enemy already
-					// frozen just goes); "platform" fires on the count rising — the new
-					// cast is the event, a leftover platform from earlier is not.
+					// frozen just goes). "platform" fires on the count rising above the
+					// LOWEST count seen since arming, not a fixed arm-time baseline: the
+					// game caps live platforms at one, so a fixed baseline of 1 could
+					// never fire again — expiry drops the count to 0 and a fresh cast
+					// only returns it to 1. The floor tracks the expiry down.
+					let floorPlatforms = start.platformCount;
 					const ta = performance.now();
 					for (;;) {
 						await pause(60);
 						const s = b.getState();
 						const t = performance.now() - ta;
-						const fired = opts.arm.on === "freeze" ? s.enemyFrozen : s.platformCount > start.platformCount;
+						const fired = opts.arm.on === "freeze" ? s.enemyFrozen : s.platformCount > floorPlatforms;
 						if (fired) {
 							events.push("arm-fired");
 							armedForMs = Math.round(t);
@@ -205,6 +210,7 @@ const routes = {
 							);
 							return { events, before, after: s, elapsedMs: 0, armedForMs: Math.round(t) };
 						}
+						floorPlatforms = Math.min(floorPlatforms, s.platformCount);
 					}
 				}
 				if (opts.dir === "right") b.input.right = true;
