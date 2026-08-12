@@ -427,6 +427,17 @@ describe("watcher spawn mode", () => {
 		expect(h.notifications.some((n) => n.message.includes("429 quota exceeded"))).toBe(true);
 	});
 
+	// Not an error — no model, or nothing to summarize — but the successor gets a thinner note
+	// than the mode advertises, so silence would be the wrong answer.
+	it("says so when the composer had nothing to compose from", async () => {
+		const h = harness(dir, { env: SPAWN, compose: async () => undefined });
+		await h.settle(85);
+
+		expect(h.notifications.some((n) => n.message.includes("Nothing to compose from"))).toBe(true);
+		expect(h.notes()[0].body).toContain("mid-session at 85% context usage");
+		expect(h.spawns).toHaveLength(1);
+	});
+
 	it("spawns with a mechanical kickoff when no composer is wired", async () => {
 		const h = harness(dir, { env: SPAWN });
 		await h.settle(85);

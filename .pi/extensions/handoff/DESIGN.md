@@ -632,13 +632,21 @@ that a refused crossing never spends a compose call.
 
 **Live smoke, 2026-08-12** — `pi -p` in a scratch dir (`-e` with an absolute path, never
 the repo cwd, which holds live notes from concurrent sessions), Gemini free tier,
-`PI_HANDOFF_WATCH=spawn PI_HANDOFF_WATCH_AT=0.05 PI_HANDOFF_SPAWN_MAX=1`. The whole chain
-ran: the crossing wrote an LLM-composed `source: watch` note carrying a model-written
-kickoff, the successor started in-process, the reader delivered the briefing memo with
-that kickoff as its first turn, and the successor's own crossing was refused by the cap
-with the message it should give. The archived note came back stamped
+`PI_HANDOFF_WATCH=spawn PI_HANDOFF_WATCH_AT=0.05 PI_HANDOFF_SPAWN_MAX=1`. The chain
+mechanics all ran: the crossing wrote an LLM-composed `source: watch` note carrying a
+model-written kickoff, the successor started in-process, the reader delivered the briefing
+memo with that kickoff as its first turn, and the successor's own crossing was refused by
+the cap with the message it should give. The archived note came back stamped
 `consumed_by: 019ff82e-bf52…` — the retirement predicate's input, produced in the wild
 rather than by a test.
+
+Read the threshold in that command line before reading too much into it: `0.05` means the
+composer summarized two turns. At the default 80% it summarizes a near-window-sized
+conversation and sends it to the same model whose window is that full, so "the compose
+request did not fit" is a *likely* failure there and an impossible one here. That path is
+unverified. What the build did do about it is make the failure loud rather than silent —
+`composeForSpawn` throws on a provider refusal specifically so the watcher reports it
+instead of quietly shipping the mechanical note (review F2 on PR #19).
 
 **Flagged unknown, now answered:** `-p` print mode *does* outlive a spawned successor's
 run. The process stayed alive across the replacement and printed the successor's reply,

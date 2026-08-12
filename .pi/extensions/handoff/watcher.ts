@@ -284,12 +284,11 @@ async function spawnSuccessor(ctx: ExtensionContext, kickoff: string): Promise<v
 /**
  * Hand the successor spawn back to `/handoff`.
  *
- * The watcher cannot spawn one itself: `newSession()` lives on `ExtensionCommandContext`,
- * and event handlers are given the plain `ExtensionContext` (runner.ts `createContext` vs
- * `createCommandContext`). `/handoff` has the command context, already composes a richer
- * note, and already confirms the spawn — so prefill it rather than reimplement half of it.
- * Only into an empty editor: overwriting what the user typed to save them a keystroke is
- * not a trade worth making.
+ * Not because the watcher can't — `spawn` mode above does exactly that — but because this is
+ * `propose`, and a user who is answering a dialog asked to review the note, not to have their
+ * session replaced out from under them. `/handoff` composes a richer note and confirms the
+ * spawn, so prefill it rather than reimplement half of it. Only into an empty editor:
+ * overwriting what the user typed to save them a keystroke is not a trade worth making.
  */
 function offerCompose(ctx: ExtensionContext): void {
 	if (ctx.ui.getEditorText().trim() === "") {
@@ -355,10 +354,15 @@ async function act(ctx: ExtensionContext, options: ActOptions): Promise<string |
 			if (composed) {
 				note.body = composed.body;
 				if (composed.kickoff) note.frontmatter.kickoff = composed.kickoff;
+			} else {
+				// Not an error — no model, or nothing to summarize — but the successor is getting
+				// a thinner note than the mode advertises, so it is said out loud either way.
+				report(ctx, "Nothing to compose from; spawning with the mechanical note.", "info");
 			}
 		} catch (err) {
-			// A throttled or failed composer must not cost the successor: the mechanical note
-			// plus `ask_predecessor` still gets it working.
+			// A throttled or oversized compose must not cost the successor: the mechanical note
+			// plus `ask_predecessor` still gets it working. This is the reporting path for a
+			// provider refusal — see `composeForSpawn`, which throws to reach it.
 			const why = describeError(err);
 			report(ctx, `Handoff composition failed (${why}); spawning with the mechanical note.`, "warning");
 		}
@@ -366,7 +370,7 @@ async function act(ctx: ExtensionContext, options: ActOptions): Promise<string |
 
 	report(ctx, `${headline(percent)} — handoff note written: ${writeNote(ctx.cwd, note)}`, "info");
 	// The caller decides *when*: now on a settle, or carried to the settle that follows a
-	// compaction. `allowSpawn` is a deferral, never a refusal, so it is not consulted here.
+	// compaction. Deferral is not refusal, so it is not consulted here.
 	if (config.mode !== "spawn") return;
 	return note.frontmatter.kickoff || "Continue the previous session's work.";
 }
@@ -411,10 +415,12 @@ export function registerWatcher(pi: ExtensionAPI, deps: WatcherDeps): void {
 	let busy = false;
 	/**
 	 * A spawn the compaction path wrote a note for and deferred. The compaction trigger runs
-	 * *inside* the agent run, and replacing the session there is the stale-context footgun:
-	 * everything downstream of `_checkCompaction` — the rest of the run, the settle emit —
-	 * would be holding a context whose session no longer exists. `_emitAgentSettled` runs in
-	 * the loop's `finally`, so a settle always follows; the spawn rides to it.
+	 * *inside* the agent run, and spawning there does not merely risk stale contexts — it
+	 * hangs pi. Replacing a session aborts the old one and waits for it to go idle, and the
+	 * run cannot go idle until this handler returns, so the two wait on each other forever
+	 * (`newSession`'s own doc in `extensions/types.ts` names the deadlock).
+	 * `_emitAgentSettled` runs in the loop's `finally`, so a settle always follows; the spawn
+	 * rides to it, where the run is over and both problems are gone.
 	 */
 	let pendingSpawn: string | undefined;
 
