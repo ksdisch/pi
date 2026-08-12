@@ -4,17 +4,20 @@
  *
  * The problem is the desktop, not the process. A session that ran `/handoff` and had its
  * note ingested by another window has nothing left to do, but it keeps its terminal window
- * open forever — nobody tells it the work moved on. So it asks: is one of *my* notes sitting
- * in `archive/` with a `consumed_by` stamp on it?
+ * open forever — nobody tells it the work moved on. So it asks one question: has *the note I
+ * just wrote* turned up in `archive/` with someone else's `consumed_by` stamp on it?
  *
- * `superseded_by` deliberately does not qualify. Superseded means a newer note won the
- * briefing slot, not that this session's work was ingested by anyone.
+ * Every word of that is load-bearing. `superseded_by` does not qualify — superseded means a
+ * newer note won the briefing slot, not that anyone ingested this session's work. "Someone
+ * else's" excludes our own id, which a session can end up stamping on its own note. And *the
+ * note I just wrote* is the note, not the session id: ids outlive their process, so an
+ * id-only match also matches handoffs from a previous life of the same session. See
+ * DESIGN.md § Retirement for the two ways that bit.
  *
- * A consequence worth stating: watch notes cannot drive this. The reader's liveness guard
- * makes sibling processes skip a live writer's watch note, so one can never be stamped
- * `consumed_by` while its writer is alive to react. In practice the predicate fires for
- * `/handoff`-written notes — the deliberate cross-process handoff — which is the right
- * shape: retirement follows an intentional handoff, not a mid-session snapshot.
+ * Only `/handoff` notes can drive this, and that is the right shape rather than a limitation:
+ * the reader's liveness guard makes sibling processes skip a live writer's watch note, so a
+ * watch note can never be stamped `consumed_by` while its writer is alive to react.
+ * Retirement follows an intentional handoff, not a mid-session snapshot.
  *
  * pi imports are type-only, so this module is importable from tests (see DESIGN.md's note
  * on why `index.ts` is not).
@@ -175,7 +178,14 @@ export function registerRetire(pi: ExtensionAPI, deps: RetireDeps): void {
 	 * and a pending tick, its guards throw, which `tick` catches.
 	 */
 	let ctx: ExtensionContext | undefined;
-	/** The predicate stays true once it fires; report it once, then stop looking. */
+	/**
+	 * One report per session, then the poll stops. A consumed note stays consumed, so
+	 * re-checking the same one would notify every 30 s forever.
+	 *
+	 * Known gap (review F9, PR #18): this latches per session, not per note, so a *second*
+	 * `/handoff` in the same session goes unwatched. Costs one report in the rare
+	 * hand-off-twice-then-keep-working session; the fix is to latch on the note path.
+	 */
 	let reported = false;
 	let grace: ReturnType<typeof setTimeout> | undefined;
 
