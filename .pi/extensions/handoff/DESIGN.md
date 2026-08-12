@@ -64,6 +64,7 @@ session_file: /Users/kyle/.pi/agent/sessions/--...--/2026-08-10T21-52-05-564Z_01
 cwd: /Users/kyle/Projects/foo
 created: 2026-08-10T22:15:00.000Z
 source: command            # "command" (/handoff, LLM-composed) | "digest" (shutdown, mechanical)
+                           # | "watch" (context-fullness watcher, mechanical, mid-session)
 model: google/gemini-3.6-flash
 kickoff: "Continue implementing the reader module; start by wiring archive-on-delivery."
 ---
@@ -104,6 +105,7 @@ the project-local copy never double-load.
   compose.ts      # /handoff LLM composition (prompt + ctx.modelRegistry.complete)
   reader.ts       # pending-note detection, memo injection, archive-on-delivery
   ghost.ts        # ask_predecessor: answer questions from the predecessor's transcript
+  watcher.ts      # context-fullness watcher: config, threshold decision, agent_settled wiring
   DESIGN.md       # this document
 ```
 
@@ -203,6 +205,8 @@ imports only. Keeps installation = "copy or symlink the folder."
   the second archive `rename()` fails ENOENT and is swallowed. Both ingesting
   the same briefing is acceptable; losing it is not. (Pi's v3 session layer has
   no locking either; atomic rename is our only primitive and it's sufficient.)
+  Separately, a note whose writer is *still running* — only the watcher writes
+  those — is skipped rather than ingested; see the watcher section.
 
 ### Nice-to-have (build only if trivial): `pi.registerMessageRenderer("handoff", …)`
 for a styled memo box in the TUI. Default `custom_message` styling is acceptable
@@ -308,10 +312,133 @@ the sibling `intercom` extension — the two compose rather than compete.
   tail-capped at 150k chars overall.
 - `notes.ts` gained `listArchivedNotePaths`; everything else is additive.
 
+## Context-fullness watcher (added 2026-08-11)
+
+A note at the high-water mark rather than at the exit.
+
+**Not** because compaction costs the shutdown digest anything — it does not. The digest
+reads `getBranch()`, the full root-to-leaf path, which keeps every pre-compaction entry
+(the reason it uses `getBranch()` over `buildContextEntries()` is spelled out in
+`index.ts`). An earlier draft of this section claimed otherwise and was wrong. The
+reasons that hold up:
+
+- **The shutdown digest is best-effort.** A crash, a SIGKILL, or a closed terminal never
+  reaches `session_shutdown` — and a session at the end of its context window is exactly
+  where those happen. A watch note is already on disk by then.
+- **Compaction degrades the session's own working context.** Once it has run, the moment
+  to hand off has passed; the successor inherits a summary of a summary.
+- **It is the stopping-point detection** an autonomous spawner needs.
+
+- **Hooks — two, because one is not enough:**
+  - `pi.on("agent_settled", …)`, the ordinary crossing.
+  - `pi.on("session_before_compact", …)`. pi compacts *inside* the agent run:
+    `_checkCompaction` is called from `_handlePostAgentRun` and `_emitAgentSettled` only
+    runs in the `finally` after that loop. So a run that goes from under the threshold to
+    over the compaction trigger in one step reaches settle at `percent: null` — pi cannot
+    price the new context until the next assistant reply — and settle alone would miss
+    precisely the crossing this feature exists for. The compaction hook catches the same
+    crossing a step earlier, with the pre-compaction branch handed to it by the event. It
+    returns nothing (a truthy result there cancels the compaction) and never shows a
+    dialog: compaction is already waiting on the handler.
+
+  Handlers are awaited by `_emitAgentSettled`, so a dialog holds the settle path open —
+  and with it interactive mode's `checkShutdownRequested()`. See the `propose` hazards
+  below for why that is opt-in and time-bounded.
+- **Settings** (environment, not CLI flags: the successor sessions this is groundwork
+  for are spawned as child processes, which inherit env and not argv):
+
+  | `PI_HANDOFF_WATCH` | At the threshold |
+  |---|---|
+  | `off` | nothing |
+  | `notify` | report the crossing; write nothing |
+  | `propose` | TUI: 3-way select — write the note / compose via `/handoff` / not now |
+  | `auto` (default) | write the note, report the path |
+
+  `PI_HANDOFF_WATCH_AT` is the percent, default 80. A value outside `(0, 100]` or an
+  unknown mode falls back to the default **and warns once** — a typo that silently
+  disables the watcher is the failure this exists to prevent.
+
+  **Why `auto` is the default and `propose` is opt-in.** pi's extension selector is not an
+  overlay: `showExtensionSelector` calls `disposeActiveSelector()`, clears the editor
+  container and takes focus. So a dialog raised at an arbitrary settle (1) destroys a
+  model or session picker the user already had open, (2) parks the settle path — and with
+  it the shutdown check, so a quit pressed during the run waits behind a handoff prompt —
+  and (3) in a scripted TUI (the tmux workflow `AGENTS.md` documents, the one agents use)
+  swallows the next `send-keys` prompt, whose `Enter` confirms the highlighted row instead.
+  Writing the note costs one file in a git-excluded directory and seizes nothing, so that
+  is the default. When `propose` is asked for, the dialog carries a
+  `PROPOSE_TIMEOUT_MS` timeout so (2) is bounded: an unanswered dialog dismisses itself and
+  is read as "not now".
+
+  Outside the TUI, `propose` degrades to `auto` rather than to silence. `-p`/JSON have no
+  dialog surface at all, and RPC has one that a host may never answer — the same hazard
+  that keeps `/handoff`'s editor review TUI-gated. A proposal nobody can answer loses the
+  note; writing it costs a file.
+- **Firing discipline:** at most once per crossing. Re-arms only once usage falls
+  `REARM_MARGIN_PERCENT` (10) below the threshold — i.e. after a compaction, not while
+  usage hovers at 79/81 across turns. Usage of `null` (between a compaction and the next
+  assistant response, when pi cannot yet price the context) holds the armed flag as-is
+  rather than treating unknown as low.
+- **Skips:** when `/handoff` already wrote a note this session (a mechanical note would
+  supersede a richer one as "newest pending" — same rule the shutdown digest follows);
+  when `getSessionFile()` is undefined (`--no-session`), reported as a warning since the
+  user asked for a note; when the branch holds no assistant message.
+- **Does not set `wroteNoteThisSession`.** The session usually keeps working after the
+  watcher fires, so the shutdown digest must still run at quit; its note is newer and the
+  reader supersedes the watcher's. Both being pending at once is the designed outcome,
+  not a leak.
+- **A watch note's writer is usually still running** — the one note in this design whose
+  session has not stopped. Concurrent pi sessions in one cwd are normal here
+  (`AGENTS.md` § Git), and the reader gates only on `session_start` reason, so without a
+  guard a sibling session would ingest another session's in-progress snapshot as its
+  briefing and archive it `consumed_by` itself. So watch notes carry the writer's `pid`,
+  and `scanPendingNotes` skips any note whose writer is a *different* live process
+  (`isForeignWriterAlive`, `kill(pid, 0)`; EPERM counts as alive). Skipped, not consumed:
+  the note stays pending, so once that process exits it becomes an ordinary pending note —
+  which is exactly the crash-seatbelt case. Pid reuse can make a dead writer look alive;
+  that direction leaves the note on disk to be read later rather than consumed by the wrong
+  session now.
+
+  "Different" is the load-bearing word. pi's successor sessions run **in-process**: `/new`
+  and `ctx.newSession()` fire `session_start` with `reason: "new"` and the same pid, so a
+  note carrying our own pid is the previous session in this process briefing this one — the
+  whole point. A guard without that exception starves the successor it was built for, which
+  is what the first draft of it did. The scan runs once, from `session_start`, and the
+  watcher cannot write before a run has settled, so an own-pid note is never one this
+  session wrote.
+- **Note content:** the same mechanical `buildDigestNote`, with `trigger: "watch"` —
+  `source: watch` in frontmatter and a Context section that says the session was still
+  running. The shutdown wording ("written when the previous session exited") would be a
+  lie mid-session, and a stale note that reads as a current one is worse than no note.
+
+### Why the watcher cannot spawn the successor
+
+`newSession()` lives on `ExtensionCommandContext`; event handlers are handed the plain
+`ExtensionContext` (`runner.ts`: `createContext` vs `createCommandContext`). Nothing on
+`ExtensionAPI` reaches it either. So the watcher offers the spawn instead of performing
+it: the compose choice prefills `/handoff` into an empty editor, and `/handoff` — which
+has a command context — composes the richer note and runs the existing spawn confirm. An
+already-typed prompt is left alone; saving a keystroke is not worth clobbering the user's
+text. Closing this gap is the next backlog item's problem, and it likely needs an
+upstream change rather than a fork-local one.
+
+### Verified how
+
+`watcher.ts` keeps its pi imports type-only, so both halves are unit-tested:
+`test/watcher.test.ts` (config parsing, threshold/re-arm decisions) and
+`test/watcher-wiring.test.ts` (both triggers and every mode end-to-end against a fake `pi`,
+asserting what reaches disk). Live smoke: `pi -p` with `PI_HANDOFF_WATCH_AT` set below 1%
+wrote a real `source: watch` note, reported it on stderr, and the shutdown digest still
+wrote its own note 1 ms later — the intended two-note outcome. The TUI select dialog itself
+is the one path with no live coverage (no tmux on the machine that built this); it is one
+`ctx.ui.select` call, covered by the wiring tests.
+
+Note that a threshold at or below `REARM_MARGIN_PERCENT` (10) — which the smoke above uses
+— can never re-arm, so the watcher fires exactly once for the life of that process. Fine for
+a smoke run, wrong as a setting; a warning for it is an open follow-up.
+
 ## Explicitly out of scope for v1 (v2 hooks noted)
 
-- Context-fullness watcher (`ctx.getContextUsage()` checked on `agent_settled`)
-  proposing or auto-running `/handoff`.
 - Autonomous successor spawning (the `kickoff` field is the contract it will consume).
 - Messaging integration (Slack/Telegram ping at decision points).
 - Repo-scoped event ledger (the dated-history `handoffs/` dir is its seed).

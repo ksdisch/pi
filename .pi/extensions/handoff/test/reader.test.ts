@@ -62,6 +62,43 @@ describe("scanPendingNotes", () => {
 		expect(scan.older).toEqual([]);
 	});
 
+	// Concurrent pi sessions in one cwd are normal in this repo. A watch note is written while
+	// its session is still working, so ingesting one would hand this session someone else's
+	// in-progress snapshot and archive a note that was never theirs.
+	it("skips a watch note whose writing process is another live session", () => {
+		// The parent of this test runner: a real pid, alive, and not us.
+		writeNote(dir, note({ source: "watch", pid: String(process.ppid) }));
+		expect(scanPendingNotes(dir)).toEqual({ older: [], corrupt: [] });
+	});
+
+	// pi's successor sessions run in-process: `/new` and `ctx.newSession()` fire session_start
+	// with the same pid. Skipping our own note would starve the successor this feature exists
+	// to brief — and this scan runs before the current session's watcher can write anything,
+	// so an own-pid note is always the previous session in this process.
+	it("ingests its own process's watch note — the in-process successor", () => {
+		writeNote(dir, note({ source: "watch", pid: String(process.pid), session_id: "eeeeeeee" }));
+		expect(scanPendingNotes(dir).ingest?.note.frontmatter.session_id).toBe("eeeeeeee");
+	});
+
+	it("ingests a watch note once its writer is gone — the crash-seatbelt case", () => {
+		writeNote(dir, note({ source: "watch", pid: "99999999", session_id: "dddddddd" }));
+		expect(scanPendingNotes(dir).ingest?.note.frontmatter.session_id).toBe("dddddddd");
+	});
+
+	it("falls back to an older note rather than the live sibling's", () => {
+		writeNote(dir, note({ created: "2026-08-09T10:00:00.000Z", session_id: "aaaaaaaa" }));
+		writeNote(
+			dir,
+			note({ created: "2026-08-10T22:15:00.000Z", session_id: "bbbbbbbb", source: "watch", pid: String(process.ppid) }),
+		);
+
+		const scan = scanPendingNotes(dir);
+		expect(scan.ingest?.note.frontmatter.session_id).toBe("aaaaaaaa");
+		// Left in place: once that process exits it becomes an ordinary pending note.
+		expect(scan.older).toEqual([]);
+		expect(scan.corrupt).toEqual([]);
+	});
+
 	it("ignores already-archived notes", () => {
 		writeNote(dir, note());
 		archiveDelivered(dir, scanPendingNotes(dir), "consumer", "2026-08-11T09:00:00.000Z");
@@ -79,6 +116,13 @@ describe("buildMemo", () => {
 
 	it("labels a /handoff-composed note differently", () => {
 		expect(buildMemo(note({ source: "command" })).split("\n")[0]).toContain("(composed via /handoff)");
+	});
+
+	// "ended" would be a lie: the watcher writes while its session is still running.
+	it("says a watcher note was written, not that the session ended", () => {
+		expect(buildMemo(note({ source: "watch" })).split("\n")[0]).toBe(
+			"Handoff from session 019feda9, written 2026-08-10T22:15:00.000Z (context-fullness watcher, mid-session).",
+		);
 	});
 
 	it("carries the note body and a transcript pointer", () => {

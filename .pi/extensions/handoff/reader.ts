@@ -9,7 +9,22 @@
 
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { archiveNote, type HandoffNote, listPendingNotePaths, readNote } from "./notes.ts";
+import {
+	archiveNote,
+	type HandoffNote,
+	type HandoffSource,
+	isForeignWriterAlive,
+	listPendingNotePaths,
+	readNote,
+} from "./notes.ts";
+
+const SOURCE_LABELS: Record<HandoffSource, string> = {
+	command: "composed via /handoff",
+	digest: "shutdown digest",
+	// A watch note is written while its session is still running, so the banner must not
+	// claim that session is over — it may have worked for hours after this snapshot.
+	watch: "context-fullness watcher, mid-session",
+};
 
 export interface PendingScan {
 	/** Newest valid pending note — the one that gets injected. */
@@ -26,8 +41,22 @@ export function scanPendingNotes(cwd: string): PendingScan {
 
 	for (const path of listPendingNotePaths(cwd)) {
 		const note = readNote(path);
-		if (note) valid.push({ path, note });
-		else scan.corrupt.push(path);
+		if (!note) {
+			scan.corrupt.push(path);
+			continue;
+		}
+		// A watch note is written mid-session, so its writer may still be working in this same
+		// cwd — concurrent pi sessions here are normal. Ingesting it would hand this session
+		// someone else's in-progress snapshot and archive a note that was never theirs. Left
+		// in place rather than skipped for good: once that process exits, this becomes an
+		// ordinary pending note, which is exactly the crash-seatbelt case it exists for.
+		//
+		// Notes from *this* process are read normally. This scan runs once, from `session_start`,
+		// and the watcher cannot write before a run has settled — so an own-pid note is always a
+		// previous session in this process, i.e. an in-process successor (`/new`,
+		// `ctx.newSession()`) reading the briefing that was written for it.
+		if (isForeignWriterAlive(note)) continue;
+		valid.push({ path, note });
 	}
 
 	// Filenames are timestamp-prefixed, so the list is already oldest-first.
@@ -37,9 +66,10 @@ export function scanPendingNotes(cwd: string): PendingScan {
 }
 
 export function buildMemo(note: HandoffNote, olderPendingCount = 0): string {
+	const { session_id, created, source } = note.frontmatter;
 	const lines = [
-		`Handoff from session ${note.frontmatter.session_id.slice(0, 8)}, ended ${note.frontmatter.created}` +
-			` (${note.frontmatter.source === "command" ? "composed via /handoff" : "shutdown digest"}).`,
+		`Handoff from session ${session_id.slice(0, 8)}, ${source === "watch" ? "written" : "ended"} ${created}` +
+			` (${SOURCE_LABELS[source]}).`,
 		"",
 		note.body.trimEnd(),
 	];

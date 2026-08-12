@@ -23,7 +23,18 @@ import { basename, dirname, join, resolve } from "node:path";
 
 export const HANDOFF_SCHEMA = "pi-handoff/v1";
 
-export type HandoffSource = "command" | "digest";
+/**
+ * How the note was produced. `digest` and `watch` share the mechanical builder; they are
+ * distinguished because a `watch` note is written while its session is still running, so
+ * a successor must not read it as "that session is over."
+ */
+export type HandoffSource = "command" | "digest" | "watch";
+
+const SOURCES: HandoffSource[] = ["command", "digest", "watch"];
+
+function isHandoffSource(value: string | undefined): value is HandoffSource {
+	return value !== undefined && (SOURCES as string[]).includes(value);
+}
 
 export interface HandoffFrontmatter {
 	schema: string;
@@ -37,6 +48,13 @@ export interface HandoffFrontmatter {
 	model?: string;
 	/** Ready-made opening prompt for a successor session. The v2 autonomous-spawner contract. */
 	kickoff: string;
+	/**
+	 * Process id of the writing session, recorded only by the context-fullness watcher —
+	 * the one writer whose session is usually still running when its note lands. Readers use
+	 * it to tell another session's live snapshot from a note written for them to read
+	 * (see `isForeignWriterAlive`).
+	 */
+	pid?: string;
 	/** Stamped on archive: session id that ingested this note. */
 	consumed_by?: string;
 	consumed_at?: string;
@@ -59,6 +77,7 @@ const KEY_ORDER = [
 	"source",
 	"model",
 	"kickoff",
+	"pid",
 	"consumed_by",
 	"consumed_at",
 	"superseded_by",
@@ -149,7 +168,7 @@ export function parseNote(text: string): HandoffNote | undefined {
 
 	if (fields.schema !== HANDOFF_SCHEMA) return undefined;
 	if (!fields.session_id || !fields.created) return undefined;
-	if (fields.source !== "command" && fields.source !== "digest") return undefined;
+	if (!isHandoffSource(fields.source)) return undefined;
 
 	const frontmatter: HandoffFrontmatter = {
 		schema: fields.schema,
@@ -162,6 +181,7 @@ export function parseNote(text: string): HandoffNote | undefined {
 	};
 	if (fields.session_file) frontmatter.session_file = fields.session_file;
 	if (fields.model) frontmatter.model = fields.model;
+	if (fields.pid) frontmatter.pid = fields.pid;
 	if (fields.consumed_by) frontmatter.consumed_by = fields.consumed_by;
 	if (fields.consumed_at) frontmatter.consumed_at = fields.consumed_at;
 	if (fields.superseded_by) frontmatter.superseded_by = fields.superseded_by;
@@ -295,6 +315,34 @@ export function listPendingNotePaths(cwd: string): string[] {
 /** Archived note paths, oldest first. Used by the ghost responder to find its predecessor. */
 export function listArchivedNotePaths(cwd: string): string[] {
 	return listNotePaths(archiveDir(cwd));
+}
+
+/**
+ * Was this note written by a *different* process that is still running?
+ *
+ * "Different" is load-bearing. pi's successor sessions run in-process — `/new` and
+ * `ctx.newSession()` fire `session_start` with `reason: "new"` and the same pid — so a note
+ * carrying our own pid is the previous session in this process handing off to this one, which
+ * is precisely the case that must be read rather than skipped. Only a live *sibling* process
+ * has a note we have no business consuming.
+ *
+ * Only watch notes carry a pid — every other writer has stopped by the time its note exists.
+ * `kill(pid, 0)` sends no signal; it reports reachability. EPERM means the process exists and
+ * belongs to someone else, which still counts as alive. Anything without a usable pid is
+ * reported dead, so the absence of the field never hides a note.
+ *
+ * Pid reuse can make a dead writer look alive. That direction is the safe one: the note stays
+ * pending and is read later, rather than being consumed by the wrong session now.
+ */
+export function isForeignWriterAlive(note: HandoffNote): boolean {
+	const pid = Number(note.frontmatter.pid);
+	if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
 }
 
 export function readNote(filePath: string): HandoffNote | undefined {
