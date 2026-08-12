@@ -735,6 +735,10 @@ export class ExtensionRunner {
 				runner.assertActive();
 				runner.shutdownHandler();
 			},
+			newSession: (options) => {
+				runner.assertActive();
+				return runner.newSessionHandler(options);
+			},
 			getContextUsage: () => {
 				runner.assertActive();
 				return runner.getContextUsageFn();
@@ -765,10 +769,6 @@ export class ExtensionRunner {
 		context.waitForIdle = () => {
 			this.assertActive();
 			return this.waitForIdleFn();
-		};
-		context.newSession = (options) => {
-			this.assertActive();
-			return this.newSessionHandler(options);
 		};
 		context.fork = (entryId, options) => {
 			this.assertActive();

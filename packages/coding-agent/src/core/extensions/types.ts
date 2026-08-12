@@ -338,6 +338,35 @@ export interface ExtensionContext {
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
+	/**
+	 * Start a new session, optionally with initialization.
+	 *
+	 * Here rather than on `ExtensionCommandContext` because event handlers are where
+	 * autonomous session continuation is decided — an extension that notices a session is
+	 * finished (context exhausted, work handed off) has only the plain context to act on.
+	 * `fork`/`switchSession`/`navigateTree` stay command-only; they resolve a user's
+	 * selection, not a runtime decision.
+	 *
+	 * **Only call this once the agent run has finished** — `agent_settled`, `session_start`,
+	 * a shortcut, or a command. Calling it from inside a run *deadlocks the process*: replacing
+	 * a session aborts the old one and waits for it to go idle, and a run is not idle until the
+	 * code that called this returns. Tool execution and the in-run events (`tool_call`,
+	 * `tool_result`, `before_agent_start`, `session_before_compact`) are all inside the run.
+	 * An extension that detects its moment mid-run should defer to the settle that follows.
+	 *
+	 * Not guarded on `isIdle` for you, deliberately: calling this from *outside* a live run is
+	 * legitimate and works — that is what `/new` typed mid-stream does, where the abort ends
+	 * the run and this proceeds. Only the caller knows whether it is the thing being waited on.
+	 *
+	 * Unlike `shutdown()`, which merely asks each mode to stop, this tears the live session
+	 * down: the caller's context is invalidated by the replacement, so all post-switch work
+	 * must use the `withSession` context.
+	 */
+	newSession(options?: {
+		parentSession?: string;
+		setup?: (sessionManager: SessionManager) => Promise<void>;
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+	}): Promise<{ cancelled: boolean }>;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
 	/** Trigger compaction without awaiting completion. */
@@ -356,13 +385,6 @@ export interface ExtensionCommandContext extends ExtensionContext {
 
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
-
-	/** Start a new session, optionally with initialization. */
-	newSession(options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}): Promise<{ cancelled: boolean }>;
 
 	/** Fork from a specific entry, creating a new session file. */
 	fork(

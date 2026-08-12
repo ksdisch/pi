@@ -149,6 +149,44 @@ async function compose(
 	});
 }
 
+/**
+ * Compose a note body for the watcher's `spawn` mode, from a plain event context.
+ *
+ * No loader and no editor: this runs unattended, at a threshold crossing, for a successor
+ * that is about to be started. The watcher's mechanical note is the fallback either way — a
+ * thin note plus `ask_predecessor` beats no successor — but the two ways of getting there are
+ * reported differently, which is why this adapter exists:
+ *
+ * - **Returns undefined** when there was nothing to compose from (no model, empty branch).
+ *   Expected, unremarkable, no provider was even asked.
+ * - **Throws** when the provider refused. `composeNoteBody` reports that by *returning*
+ *   `{status: "failed"}` — its contract, so the command path can render the message in the UI
+ *   — which on this path would be swallowed silently by the watcher's `if (composed)` test.
+ *   The throw is what routes `message` into the watcher's one diagnostic. It matters here
+ *   more than anywhere: the call serializes a branch that is at the threshold by definition
+ *   and sends it to the same model whose window is that full, so "the request did not fit" is
+ *   the *likely* failure, not an exotic one.
+ */
+async function composeForSpawn(ctx: ExtensionContext): Promise<{ body: string; kickoff?: string } | undefined> {
+	const model = ctx.model;
+	if (!model) return undefined;
+
+	const conversationText = serializeBranch(ctx.sessionManager.buildContextEntries());
+	if (!conversationText.trim()) return undefined;
+
+	const composed = await composeNoteBody({
+		modelRegistry: ctx.modelRegistry,
+		model,
+		conversationText,
+		goal: "",
+		sessionId: uuidv7(),
+	});
+	if (composed.status === "failed") throw new Error(composed.message);
+	// Aborted needs no signal to be passed, and none is, so this is unreachable today; it is
+	// handled as "nothing to compose" rather than as an error in case that ever changes.
+	return composed.status === "ok" ? { body: composed.body, kickoff: composed.kickoff } : undefined;
+}
+
 function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 	pi.registerCommand("handoff", {
 		description: "Write a handoff note for the next session",
@@ -324,7 +362,12 @@ export default function (pi: ExtensionAPI) {
 	registerHandoffCommand(pi, state);
 	registerGhostTool(pi);
 	registerShutdownDigest(pi, state);
-	registerWatcher(pi, { handoffWritten: () => state.wroteNoteThisSession });
+	registerWatcher(pi, {
+		handoffWritten: () => state.wroteNoteThisSession,
+		// Injected rather than imported by the watcher: composing needs pi's runtime
+		// serializers, and watcher.ts keeps its pi imports type-only so it stays unit-testable.
+		composeNote: (ctx) => composeForSpawn(ctx),
+	});
 	registerRetire(pi, {
 		handoffNotePath: () => state.notePath,
 		// The same flag /handoff sets, for the same reason: the note that was already consumed

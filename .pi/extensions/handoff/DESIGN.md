@@ -353,9 +353,11 @@ reasons that hold up:
   | `notify` | report the crossing; write nothing |
   | `propose` | TUI: 3-way select — write the note / compose via `/handoff` / not now |
   | `auto` (default) | write the note, report the path |
+  | `spawn` | compose the note, write it, then start the successor on its kickoff |
 
-  `PI_HANDOFF_WATCH_AT` is the percent, default 80. A value outside `(0, 100]` or an
-  unknown mode falls back to the default **and warns once** — a typo that silently
+  `PI_HANDOFF_WATCH_AT` is the percent, default 80. `PI_HANDOFF_SPAWN_MAX` caps successor
+  spawns per process, default 10. A value outside `(0, 100]`, a cap that is not a
+  non-negative integer, or an unknown mode falls back to the default **and warns once** — a typo that silently
   disables the watcher is the failure this exists to prevent.
 
   **Why `auto` is the default and `propose` is opt-in.** pi's extension selector is not an
@@ -411,16 +413,19 @@ reasons that hold up:
   running. The shutdown wording ("written when the previous session exited") would be a
   lie mid-session, and a stale note that reads as a current one is worse than no note.
 
-### Why the watcher cannot spawn the successor
+### Why the watcher could not spawn the successor — and now can
 
-`newSession()` lives on `ExtensionCommandContext`; event handlers are handed the plain
-`ExtensionContext` (`runner.ts`: `createContext` vs `createCommandContext`). Nothing on
-`ExtensionAPI` reaches it either. So the watcher offers the spawn instead of performing
-it: the compose choice prefills `/handoff` into an empty editor, and `/handoff` — which
-has a command context — composes the richer note and runs the existing spawn confirm. An
-already-typed prompt is left alone; saving a keystroke is not worth clobbering the user's
-text. Closing this gap is designed in the "Session lifecycle" section below — the
-constraint turned out to be an exposure choice, not missing machinery.
+`newSession()` used to live only on `ExtensionCommandContext`, while event handlers are
+handed the plain `ExtensionContext` (`runner.ts`: `createContext` vs
+`createCommandContext`), and nothing on `ExtensionAPI` reached it either. The constraint
+turned out to be an exposure choice rather than missing machinery, and the fork patch
+below moves the one graft; `PI_HANDOFF_WATCH=spawn` is the watcher acting on its own
+detection.
+
+`propose`'s compose choice still hands the job to `/handoff`, and that is still right for
+it: a user who is answering a dialog is asking to review the note, not to be replaced.
+It prefills `/handoff` into an empty editor only — saving a keystroke is not worth
+clobbering text the user already typed.
 
 ### Verified how
 
@@ -439,8 +444,10 @@ a smoke run, wrong as a setting; a warning for it is an open follow-up.
 
 ## Session lifecycle — autonomous succession + retirement (added 2026-08-12)
 
-Status: **approved design, not yet built** · Build plan:
-`docs/build-plans/2026-08-12-session-lifecycle.md`
+Status: **built 2026-08-12** — retirement in PR #18, the exposure patch and `spawn` mode
+in PR #19 · Build plan: `docs/build-plans/2026-08-12-session-lifecycle.md`. Where the
+build corrected the design, the correction is recorded inline below rather than left to
+the PR history.
 
 Closes the gap the watcher section names — the watcher detects the stopping point but
 cannot act on it — and its inverse: a session whose work was picked up elsewhere sits in
@@ -493,10 +500,19 @@ discipline already covers the new surface.
 The watcher's mode table gains a row: `spawn` — everything `auto` does, then start the
 successor. The flow at a settle crossing:
 
-1. **Compose the note** via the `/handoff` composer (`compose.ts` is callable from the
-   event context — `modelRegistry` is on the plain `ExtensionContext`). On any error —
-   429, timeout — fall back to the mechanical digest note. A thin note plus
-   `ask_predecessor` beats no successor; the chain must survive free-tier throttling.
+1. **Compose the note** via the `/handoff` composer. On any error — 429, timeout — fall
+   back to the mechanical digest note. A thin note plus `ask_predecessor` beats no
+   successor; the chain must survive free-tier throttling.
+
+   The design said `compose.ts` is callable from the event context because `modelRegistry`
+   is on the plain `ExtensionContext`, which is true and not sufficient: the *input* to the
+   composer is a serialized branch, and `serializeConversation`/`convertToLlm`/
+   `sessionEntryToContextMessages` are runtime pi imports. Pulling those into `watcher.ts`
+   would end its type-only discipline and with it its unit tests. So the composer is
+   injected — `index.ts` (the wiring module, already exempt) passes `composeNote` in
+   `WatcherDeps`, and the watcher treats absent, undefined, and throwing identically:
+   write the mechanical note. Composition is also skipped whenever the crossing could not
+   spawn anyway, so a refusal never costs a free-tier request.
 2. **`ctx.newSession({ withSession })`** — in-process replacement: same window, same
    process, no clutter created.
 3. **Inside `withSession`** (a `ReplacedSessionContext` — a full command context):
@@ -506,16 +522,29 @@ successor. The flow at a settle crossing:
    locked decision 6 doing what it was stored for.
 
 **Spawn only from the settle path.** The `session_before_compact` crossing fires
-*inside* the agent run; replacing the session there is the stale-context footgun. That
+*inside* the agent run, and spawning there does not merely risk a stale context — it
+**hangs pi**: replacing a session aborts the old one and waits for it to go idle, and the
+run cannot go idle until the handler doing the replacing returns. (Found in review, PR
+#19 F1; `newSession`'s own doc in `extensions/types.ts` now carries the trace.) That
 crossing writes the note and sets a `spawnPending` flag; the run's own settle — which
-always follows, `_emitAgentSettled` runs in the loop's `finally` — performs the spawn.
+always follows, `_emitAgentSettled` runs in the loop's `finally` — performs the spawn,
+by which point the run is over and both problems are gone.
 
 **Skips:** everything the watcher already skips, plus `hasPendingMessages()` — queued
 follow-ups mean the session is not done. **Runaway guard:** a module-level generation
-counter (extension instances survive `newSession`) caps spawns per process — default
-10, `PI_HANDOFF_SPAWN_MAX` overrides, same parse-with-warn rules. At the cap, degrade
-to `auto` behavior plus a notice. Each spawn requires a genuine threshold crossing, so
-the counter is a backstop, not a governor.
+counter caps spawns per process — default 10, `PI_HANDOFF_SPAWN_MAX` overrides, same
+parse-with-warn rules. At the cap, degrade to `auto` behavior plus a notice. Each spawn
+requires a genuine threshold crossing, so the counter is a backstop, not a governor.
+
+Module-level is load-bearing, and for the opposite reason the design gave. Extension
+*instances* do **not** survive `newSession`: every session replacement builds a new
+runtime with a new `DefaultResourceLoader`, which re-loads extensions and re-invokes the
+factory (`agent-session-runtime.ts` `teardownCurrent` → `createRuntime`;
+`agent-session-services.ts`; `extensions/loader.ts` — `await factory(api)` runs per load,
+only the module itself is cached). So every `let` inside `registerWatcher` resets on each
+spawn, and a per-instance counter would sit at 1 forever. What survives the chain is the
+module, which is exactly what the counter lives in. (Established while adjudicating
+review F2 on PR #18, which turned on the same mechanism.)
 
 The shutdown digest is unaffected: `newSession` fires `session_shutdown` with
 `reason: "new"`, which Writer B already ignores.
@@ -598,16 +627,44 @@ channels go silent with messages preserved on disk (matches intercom's known lim
 Free-tier budget: one composer call per spawn against ~20/day, with the mechanical
 fallback keeping the chain alive when it throttles.
 
-### Verified how (planned)
+### Verified how
 
-`retire.ts` keeps pi imports type-only: unit tests for config parsing and the
-predicate, wiring tests against the fake `pi` (the `watcher-wiring.test.ts` pattern).
-Spawn-mode wiring tests assert the settle-only rule, the generation cap, and the
-compose-fallback. Live smokes in a scratch dir (`-e` with an absolute path, never the
-repo cwd), Gemini free tier: the in-process chain end-to-end at a low threshold, and a
-two-process retirement (one session consumes, the writer notifies/retires). Flagged
-unknowns to verify during the build: whether `-p` print mode's process outlives a
-spawned successor's run, and Warp's close-on-exit behavior for `exec`-rooted sessions.
+`retire.ts` keeps pi imports type-only, so both halves are unit-tested: `retire.test.ts`
+(env parsing, the predicate against synthetic frontmatter) and `retire-wiring.test.ts`
+(the poll's gate, the notify text, the `auto` grace and each of its three guards, digest
+suppression, teardown). Spawn-mode wiring tests assert the settle-only rule, the deferred
+spawn from the compaction path, the cap across two instances, the compose-fallback, and
+that a refused crossing never spends a compose call.
+
+**Live smoke, 2026-08-12** — `pi -p` in a scratch dir (`-e` with an absolute path, never
+the repo cwd, which holds live notes from concurrent sessions), Gemini free tier,
+`PI_HANDOFF_WATCH=spawn PI_HANDOFF_WATCH_AT=0.05 PI_HANDOFF_SPAWN_MAX=1`. The chain
+mechanics all ran: the crossing wrote an LLM-composed `source: watch` note carrying a
+model-written kickoff, the successor started in-process, the reader delivered the briefing
+memo with that kickoff as its first turn, and the successor's own crossing was refused by
+the cap with the message it should give. The archived note came back stamped
+`consumed_by: 019ff82e-bf52…` — the retirement predicate's input, produced in the wild
+rather than by a test.
+
+Read the threshold in that command line before reading too much into it: `0.05` means the
+composer summarized two turns. At the default 80% it summarizes a near-window-sized
+conversation and sends it to the same model whose window is that full, so "the compose
+request did not fit" is a *likely* failure there and an impossible one here. That path is
+unverified. What the build did do about it is make the failure loud rather than silent —
+`composeForSpawn` throws on a provider refusal specifically so the watcher reports it
+instead of quietly shipping the mechanical note (review F2 on PR #19).
+
+**Flagged unknown, now answered:** `-p` print mode *does* outlive a spawned successor's
+run. The process stayed alive across the replacement and printed the successor's reply,
+so the autonomous chain works headlessly and not only in the TUI.
+
+**Not smoked live, and why:** a two-process retirement needs a session that stays alive
+for at least one 30 s poll while another consumes its note. `-p` exits the moment its
+prompt is answered, and the TUI path needs tmux, which the machine this was built on does
+not have. The wiring tests cover it end to end against a fake `pi`; what the live smoke
+adds is the confirmation above that real `consumed_by` stamps appear where the predicate
+expects them. Warp's close-on-exit behavior for `exec`-rooted sessions is likewise still
+one human observation away (see the `/launch` skill in `claude-config`).
 
 ## Explicitly out of scope for v1 (v2 hooks noted)
 

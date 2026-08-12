@@ -29,11 +29,11 @@ import type {
 	SessionEntry,
 } from "@earendil-works/pi-coding-agent";
 import { buildDigestNote, formatContextPercent } from "./digest.ts";
-import { writeNote } from "./notes.ts";
+import { type HandoffNote, writeNote } from "./notes.ts";
 
-export type WatchMode = "off" | "notify" | "propose" | "auto";
+export type WatchMode = "off" | "notify" | "propose" | "auto" | "spawn";
 
-const MODES: WatchMode[] = ["off", "notify", "propose", "auto"];
+const MODES: WatchMode[] = ["off", "notify", "propose", "auto", "spawn"];
 
 /**
  * `auto`, not `propose`. A dialog is the intrusive option everywhere it can appear: pi's
@@ -63,10 +63,35 @@ export const REARM_MARGIN_PERCENT = 10;
 
 export const MODE_ENV = "PI_HANDOFF_WATCH";
 export const THRESHOLD_ENV = "PI_HANDOFF_WATCH_AT";
+export const SPAWN_MAX_ENV = "PI_HANDOFF_SPAWN_MAX";
+
+/**
+ * Ceiling on successor spawns per process, across every session in the chain.
+ *
+ * A backstop, not a governor: each spawn needs a genuine threshold crossing, so reaching
+ * ten means something is wrong — a threshold set below the re-arm margin, a successor that
+ * inherits a full context, a loop nobody intended. Past the cap the watcher degrades to
+ * `auto` (write the note, say why) rather than going quiet.
+ */
+export const DEFAULT_SPAWN_MAX = 10;
+
+/**
+ * Spawns performed by this *process*, not this session. Successor sessions replace the
+ * extension instance but not the module, so a module-level counter is what survives the
+ * chain it is counting — instance state resets on every `newSession` and would never reach
+ * any cap.
+ */
+let spawnGeneration = 0;
+
+/** Test-only: the chain counter is module state, so a test that spawns must reset it. */
+export function resetSpawnGeneration(): void {
+	spawnGeneration = 0;
+}
 
 export interface WatchConfig {
 	mode: WatchMode;
 	thresholdPercent: number;
+	spawnMax: number;
 }
 
 export interface WatchConfigResult {
@@ -109,7 +134,20 @@ export function readWatchConfig(env: Record<string, string | undefined>): WatchC
 		}
 	}
 
-	return { config: { mode, thresholdPercent }, warnings };
+	let spawnMax = DEFAULT_SPAWN_MAX;
+	const rawSpawnMax = env[SPAWN_MAX_ENV]?.trim();
+	if (rawSpawnMax) {
+		const parsed = Number(rawSpawnMax);
+		// Zero is a legitimate setting — "never spawn, just write the note" — so the floor is
+		// zero, not one. Fractions and negatives are mistakes.
+		if (!Number.isInteger(parsed) || parsed < 0) {
+			warnings.push(`${SPAWN_MAX_ENV}="${rawSpawnMax}" is not a non-negative integer; using ${spawnMax}.`);
+		} else {
+			spawnMax = parsed;
+		}
+	}
+
+	return { config: { mode, thresholdPercent, spawnMax }, warnings };
 }
 
 export interface WatchEvaluation {
@@ -153,6 +191,25 @@ export interface WatcherDeps {
 	now?: () => string;
 	/** Defaults to `process.pid`. Recorded in watch notes so readers can test writer liveness. */
 	pid?: number;
+	/**
+	 * Compose a richer note body with one LLM call, for `spawn` mode. Injected rather than
+	 * called directly: composing needs pi's runtime serializers, and this module's pi imports
+	 * stay type-only so both halves of it can be unit-tested.
+	 *
+	 * All three outcomes fall back to the mechanical note — a thin note plus `ask_predecessor`
+	 * beats no successor, and the free tier throttles often enough that falling back is normal
+	 * rather than exceptional. What differs is how loudly:
+	 *
+	 * - **Absent** — nothing is said; nobody asked for composition.
+	 * - **Resolves undefined** — reported at info. Nothing to compose from (no model, empty
+	 *   branch); no provider was asked.
+	 * - **Throws** — reported as a warning, with the message. Use this for a provider refusal,
+	 *   the failure that actually happens here: the call sends a branch that is at the
+	 *   threshold by definition to the model whose window is that full. An implementation that
+	 *   swallows a refusal into `undefined` makes it invisible, which is the bug this split
+	 *   exists to prevent (review F2, PR #19).
+	 */
+	composeNote?: (ctx: ExtensionContext) => Promise<{ body: string; kickoff?: string } | undefined>;
 }
 
 const CHOICE_WRITE = "Write a handoff note now";
@@ -175,20 +232,20 @@ function headline(percent: number): string {
  * `entries` is passed on the compaction path, where the event hands over the pre-compaction
  * branch directly; elsewhere it is the session's current branch.
  */
-function writeWatchNote(
+function buildWatchNote(
 	ctx: ExtensionContext,
 	percent: number,
 	now: () => string,
 	entries: SessionEntry[] | undefined,
 	pid: number,
-): void {
+): HandoffNote | undefined {
 	// Undefined for `--no-session` runs. The shutdown digest skips those to honor the
 	// request not to be recorded; a note pointing at a transcript that will never exist
 	// would be worse than none, so this skips too — loudly, since the user asked for one.
 	const sessionFile = ctx.sessionManager.getSessionFile();
 	if (!sessionFile) {
 		report(ctx, `${headline(percent)}, but this session is not recorded (--no-session); no note written.`, "warning");
-		return;
+		return undefined;
 	}
 
 	const note = buildDigestNote({
@@ -202,24 +259,45 @@ function writeWatchNote(
 		trigger: "watch",
 		contextPercent: percent,
 	});
-	if (!note) return;
+	if (!note) return undefined;
 
 	// The writer of a watch note is, unlike every other note's writer, usually still running.
 	// Recording its pid lets the reader tell a live snapshot from a dead session's seatbelt.
 	note.frontmatter.pid = String(pid);
+	return note;
+}
 
-	report(ctx, `${headline(percent)} — handoff note written: ${writeNote(ctx.cwd, note)}`, "info");
+/**
+ * Replace this session with a successor and hand it the note's kickoff.
+ *
+ * The kickoff is submitted from inside `withSession`, against the *replacement* context: the
+ * reader queued the briefing memo at `session_start`, and that memo is delivered by the first
+ * real prompt, so briefing and marching orders land in the same turn. This is the `kickoff`
+ * frontmatter field finally doing the job it was stored for.
+ *
+ * Nothing is reported after a successful spawn. The context this ran on belongs to the session
+ * that no longer exists, and every member of it throws once the runner is stale — so the
+ * announcement happens before, and only cancellation (which leaves the session intact) reports
+ * after.
+ */
+async function spawnSuccessor(ctx: ExtensionContext, kickoff: string): Promise<void> {
+	spawnGeneration++;
+	const result = await ctx.newSession({
+		withSession: async (replacementCtx) => {
+			await replacementCtx.sendUserMessage(kickoff);
+		},
+	});
+	if (result.cancelled) report(ctx, "Successor session was cancelled; the handoff note is still on disk.", "warning");
 }
 
 /**
  * Hand the successor spawn back to `/handoff`.
  *
- * The watcher cannot spawn one itself: `newSession()` lives on `ExtensionCommandContext`,
- * and event handlers are given the plain `ExtensionContext` (runner.ts `createContext` vs
- * `createCommandContext`). `/handoff` has the command context, already composes a richer
- * note, and already confirms the spawn — so prefill it rather than reimplement half of it.
- * Only into an empty editor: overwriting what the user typed to save them a keystroke is
- * not a trade worth making.
+ * Not because the watcher can't — `spawn` mode above does exactly that — but because this is
+ * `propose`, and a user who is answering a dialog asked to review the note, not to have their
+ * session replaced out from under them. `/handoff` composes a richer note and confirms the
+ * spawn, so prefill it rather than reimplement half of it. Only into an empty editor:
+ * overwriting what the user typed to save them a keystroke is not a trade worth making.
  */
 function offerCompose(ctx: ExtensionContext): void {
 	if (ctx.ui.getEditorText().trim() === "") {
@@ -235,6 +313,7 @@ interface ActOptions {
 	percent: number;
 	now: () => string;
 	pid: number;
+	deps: WatcherDeps;
 	/**
 	 * False on the compaction trigger. Compaction is already waiting on this handler, and a
 	 * modal that pauses it is worse than one that pauses a finished run — so that path always
@@ -245,8 +324,9 @@ interface ActOptions {
 	entries?: SessionEntry[];
 }
 
-async function act(ctx: ExtensionContext, options: ActOptions): Promise<void> {
-	const { config, percent, now, pid, allowDialog, entries } = options;
+/** Returns the kickoff to spawn with, or undefined when this crossing must not spawn. */
+async function act(ctx: ExtensionContext, options: ActOptions): Promise<string | undefined> {
+	const { config, percent, now, pid, deps, allowDialog, entries } = options;
 	if (config.mode === "notify") {
 		report(ctx, `${headline(percent)}. Run /handoff to write a note for the next session.`, "info");
 		return;
@@ -267,7 +347,64 @@ async function act(ctx: ExtensionContext, options: ActOptions): Promise<void> {
 		}
 	}
 
-	writeWatchNote(ctx, percent, now, entries, pid);
+	// Whether a successor is coming at all — asked before the note is written, because the
+	// answer decides whether the body is worth an LLM call.
+	const spawning = config.mode === "spawn" && spawnRefusal(ctx, config) === undefined;
+
+	const note = buildWatchNote(ctx, percent, now, entries, pid);
+	if (!note) return;
+
+	// Composed only when a successor will actually read it. The call costs a request against
+	// a free tier that allows ~20 a day, and `auto`'s note is read by a human who has the
+	// session in front of them.
+	if (spawning && deps.composeNote) {
+		try {
+			const composed = await deps.composeNote(ctx);
+			if (composed) {
+				note.body = composed.body;
+				if (composed.kickoff) note.frontmatter.kickoff = composed.kickoff;
+			} else {
+				// Not an error — no model, or nothing to summarize — but the successor is getting
+				// a thinner note than the mode advertises, so it is said out loud either way.
+				report(ctx, "Nothing to compose from; spawning with the mechanical note.", "info");
+			}
+		} catch (err) {
+			// A throttled or oversized compose must not cost the successor: the mechanical note
+			// plus `ask_predecessor` still gets it working. This is the reporting path for a
+			// provider refusal — see `composeForSpawn`, which throws to reach it.
+			const why = describeError(err);
+			report(ctx, `Handoff composition failed (${why}); spawning with the mechanical note.`, "warning");
+		}
+	}
+
+	report(ctx, `${headline(percent)} — handoff note written: ${writeNote(ctx.cwd, note)}`, "info");
+	// The caller decides *when*: now on a settle, or carried to the settle that follows a
+	// compaction. Deferral is not refusal, so it is not consulted here.
+	if (config.mode !== "spawn") return;
+	return note.frontmatter.kickoff || "Continue the previous session's work.";
+}
+
+function describeError(err: unknown): string {
+	return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * Why a spawn must not happen right now, or undefined if it may. Re-read at the moment of
+ * spawning rather than cached, so a crossing deferred by a compaction is judged on the state
+ * it actually spawns in.
+ */
+function spawnRefusal(ctx: ExtensionContext, config: WatchConfig): string | undefined {
+	// Queued follow-ups mean the session is not done, whatever the context gauge says.
+	if (ctx.hasPendingMessages()) {
+		return "Successor not started: this session still has queued messages. The handoff note is on disk.";
+	}
+	if (spawnGeneration >= config.spawnMax) {
+		return (
+			`Successor not started: ${spawnGeneration} spawns already in this process ` +
+			`(${SPAWN_MAX_ENV}=${config.spawnMax}). The handoff note is on disk.`
+		);
+	}
+	return undefined;
 }
 
 /**
@@ -285,6 +422,26 @@ export function registerWatcher(pi: ExtensionAPI, deps: WatcherDeps): void {
 	let reportedWarnings = false;
 	/** An act is in flight. A dialog can be open across several settles; never stack two. */
 	let busy = false;
+	/**
+	 * A spawn the compaction path wrote a note for and deferred. The compaction trigger runs
+	 * *inside* the agent run, and spawning there does not merely risk stale contexts — it
+	 * hangs pi. Replacing a session aborts the old one and waits for it to go idle, and the
+	 * run cannot go idle until this handler returns, so the two wait on each other forever
+	 * (`newSession`'s own doc in `extensions/types.ts` names the deadlock).
+	 * `_emitAgentSettled` runs in the loop's `finally`, so a settle always follows; the spawn
+	 * rides to it, where the run is over and both problems are gone.
+	 */
+	let pendingSpawn: string | undefined;
+
+	async function spawn(ctx: ExtensionContext, kickoff: string): Promise<void> {
+		const refusal = spawnRefusal(ctx, config);
+		if (refusal !== undefined) {
+			report(ctx, refusal, "warning");
+			return;
+		}
+		report(ctx, "Context is full — starting a successor session and handing it the note.", "info");
+		await spawnSuccessor(ctx, kickoff);
+	}
 
 	async function check(ctx: ExtensionContext, allowDialog: boolean, entries?: SessionEntry[]): Promise<void> {
 		if (config.mode === "off" || busy) return;
@@ -297,9 +454,22 @@ export function registerWatcher(pi: ExtensionAPI, deps: WatcherDeps): void {
 
 		busy = true;
 		try {
-			await act(ctx, { config, percent: evaluation.percent, now, pid, allowDialog, entries });
+			const kickoff = await act(ctx, {
+				config,
+				percent: evaluation.percent,
+				now,
+				pid,
+				deps,
+				allowDialog,
+				entries,
+			});
+			if (kickoff === undefined) return;
+			// `allowDialog` is false on exactly one path — the compaction trigger — which is also
+			// the one path that must not spawn in place. One flag, both meanings.
+			if (allowDialog) await spawn(ctx, kickoff);
+			else pendingSpawn = kickoff;
 		} catch (err) {
-			report(ctx, `Handoff watcher failed: ${err instanceof Error ? err.message : String(err)}`, "warning");
+			report(ctx, `Handoff watcher failed: ${describeError(err)}`, "warning");
 		} finally {
 			busy = false;
 		}
@@ -309,6 +479,18 @@ export function registerWatcher(pi: ExtensionAPI, deps: WatcherDeps): void {
 		if (!reportedWarnings) {
 			reportedWarnings = true;
 			for (const warning of warnings) report(ctx, warning, "warning");
+		}
+		// Before the usage check, not after: the crossing already happened, and post-compaction
+		// usage reads as `null` anyway, so a fresh evaluation would decide nothing.
+		if (pendingSpawn !== undefined) {
+			const kickoff = pendingSpawn;
+			pendingSpawn = undefined;
+			try {
+				await spawn(ctx, kickoff);
+			} catch (err) {
+				report(ctx, `Handoff successor failed: ${describeError(err)}`, "warning");
+			}
+			return;
 		}
 		await check(ctx, true);
 	});

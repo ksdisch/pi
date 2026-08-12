@@ -10,7 +10,14 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { type HandoffNote, listPendingNotePaths, readNote } from "../notes.ts";
-import { MODE_ENV, PROPOSE_TIMEOUT_MS, registerWatcher, THRESHOLD_ENV } from "../watcher.ts";
+import {
+	MODE_ENV,
+	PROPOSE_TIMEOUT_MS,
+	registerWatcher,
+	resetSpawnGeneration,
+	SPAWN_MAX_ENV,
+	THRESHOLD_ENV,
+} from "../watcher.ts";
 
 /** `propose` is opt-in since it is the only mode that can seize the TUI. */
 const PROPOSE = { [MODE_ENV]: "propose" };
@@ -28,6 +35,13 @@ interface HarnessOptions {
 	handoffWritten?: boolean;
 	entries?: SessionEntry[];
 	pid?: number;
+	/** A successor session has its own id; notes are named from it, so collisions are real. */
+	sessionId?: string;
+	pendingMessages?: boolean;
+	/** Result of the injected composer. A rejected promise stands in for a throttled provider. */
+	compose?: () => Promise<{ body: string; kickoff?: string } | undefined>;
+	/** `newSession` outcome. Cancelled means the session was never replaced. */
+	newSessionCancelled?: boolean;
 }
 
 const ASSISTANT_TURN: SessionEntry[] = [
@@ -64,6 +78,9 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 		},
 	} as unknown as ExtensionAPI;
 
+	/** Kickoffs submitted by successor sessions, in order. */
+	const spawns: string[] = [];
+
 	const ctx = {
 		cwd,
 		hasUI: true,
@@ -82,15 +99,28 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 			},
 		},
 		sessionManager: {
-			getSessionId: () => "019fee63-writer",
+			getSessionId: () => options.sessionId ?? "019fee63-writer",
 			getSessionFile: () => ("sessionFile" in options ? options.sessionFile : "/sessions/019fee63.jsonl"),
 			getBranch: () => options.entries ?? ASSISTANT_TURN,
+		},
+		hasPendingMessages: () => options.pendingMessages ?? false,
+		newSession: async (opts?: { withSession?: (ctx: unknown) => Promise<void> }) => {
+			if (options.newSessionCancelled) return { cancelled: true };
+			// The replacement context is a fresh command context bound to the new session; only
+			// sendUserMessage is exercised here, which is all the watcher uses it for.
+			await opts?.withSession?.({
+				sendUserMessage: async (content: string) => {
+					spawns.push(content);
+				},
+			});
+			return { cancelled: false };
 		},
 	} as unknown as ExtensionContext;
 
 	let tick = 0;
 	registerWatcher(pi, {
 		handoffWritten: () => options.handoffWritten ?? false,
+		composeNote: options.compose,
 		env: options.env ?? {},
 		// Fixed clock: two real writes can land in the same millisecond, and the filename is
 		// the timestamp plus the session id, so they would silently overwrite each other.
@@ -106,6 +136,7 @@ function harness(cwd: string, options: HarnessOptions = {}) {
 	return {
 		notifications,
 		dialogs,
+		spawns,
 		editorText: () => editorText,
 		settle: async (percent: number | null) => {
 			setUsage(percent);
@@ -352,6 +383,166 @@ describe("watcher wiring", () => {
 	it("honors a custom threshold", async () => {
 		const h = harness(dir, { env: { [MODE_ENV]: "auto", [THRESHOLD_ENV]: "20" } });
 		await h.settle(25);
+		expect(h.notes()).toHaveLength(1);
+	});
+});
+
+describe("watcher spawn mode", () => {
+	const SPAWN = { [MODE_ENV]: "spawn" };
+	const composed = async () => ({ body: "## Context\nComposed by the model.\n", kickoff: "Finish the parser" });
+
+	// The chain counter is module state — it has to survive `newSession`, which is exactly why
+	// a per-instance counter would never reach any cap.
+	beforeEach(() => {
+		resetSpawnGeneration();
+	});
+
+	it("writes the note and starts a successor holding its kickoff", async () => {
+		const h = harness(dir, { env: SPAWN, compose: composed });
+		await h.settle(85);
+
+		const notes = h.notes();
+		expect(notes).toHaveLength(1);
+		expect(notes[0].body).toContain("Composed by the model.");
+		expect(notes[0].frontmatter.kickoff).toBe("Finish the parser");
+		// The successor's first prompt is the kickoff, so the reader's queued memo and the
+		// marching orders land in the same turn.
+		expect(h.spawns).toEqual(["Finish the parser"]);
+	});
+
+	// A thin note plus ask_predecessor beats no successor: the free tier throttles routinely,
+	// and the chain has to survive it.
+	it("falls back to the mechanical note when the composer fails", async () => {
+		const h = harness(dir, {
+			env: SPAWN,
+			compose: async () => {
+				throw new Error("429 quota exceeded");
+			},
+		});
+		await h.settle(85);
+
+		expect(h.notes()).toHaveLength(1);
+		expect(h.notes()[0].body).toContain("mid-session at 85% context usage");
+		expect(h.spawns).toHaveLength(1);
+		expect(h.notifications.some((n) => n.message.includes("429 quota exceeded"))).toBe(true);
+	});
+
+	// Not an error — no model, or nothing to summarize — but the successor gets a thinner note
+	// than the mode advertises, so silence would be the wrong answer.
+	it("says so when the composer had nothing to compose from", async () => {
+		const h = harness(dir, { env: SPAWN, compose: async () => undefined });
+		await h.settle(85);
+
+		expect(h.notifications.some((n) => n.message.includes("Nothing to compose from"))).toBe(true);
+		expect(h.notes()[0].body).toContain("mid-session at 85% context usage");
+		expect(h.spawns).toHaveLength(1);
+	});
+
+	it("spawns with a mechanical kickoff when no composer is wired", async () => {
+		const h = harness(dir, { env: SPAWN });
+		await h.settle(85);
+		expect(h.spawns).toEqual(["Continue: Wire the watcher"]);
+	});
+
+	// Replacing the session inside the agent run is the stale-context footgun: everything
+	// downstream of the compaction — the rest of the run, the settle emit — would hold a
+	// context whose session no longer exists.
+	it("never spawns from the compaction path; the settle that follows does it", async () => {
+		const h = harness(dir, { env: SPAWN, compose: composed });
+		await h.beforeCompact(92);
+
+		expect(h.notes()).toHaveLength(1);
+		expect(h.spawns).toHaveLength(0);
+
+		await h.settle(null);
+		expect(h.spawns).toEqual(["Finish the parser"]);
+		// The deferred spawn consumed the settle; no second note.
+		expect(h.notes()).toHaveLength(1);
+	});
+
+	it("carries the deferred spawn exactly once", async () => {
+		const h = harness(dir, { env: SPAWN });
+		await h.beforeCompact(92);
+		await h.settle(null);
+		await h.settle(null);
+		expect(h.spawns).toHaveLength(1);
+	});
+
+	// Queued follow-ups mean the session is not done, whatever the context gauge says.
+	it("writes the note but does not spawn while messages are queued", async () => {
+		const h = harness(dir, { env: SPAWN, pendingMessages: true });
+		await h.settle(85);
+
+		expect(h.notes()).toHaveLength(1);
+		expect(h.spawns).toHaveLength(0);
+		expect(h.notifications.at(-1)?.message).toContain("queued messages");
+	});
+
+	// The cap is a backstop against a runaway chain, not a governor: each spawn still needs a
+	// genuine crossing.
+	it("degrades to auto once the per-process cap is reached", async () => {
+		const first = harness(dir, { env: { ...SPAWN, [SPAWN_MAX_ENV]: "1" } });
+		await first.settle(85);
+		expect(first.spawns).toHaveLength(1);
+
+		// A successor session: new extension instance and new session id, same process, so the
+		// module-level counter is the only thing that carries the chain's history.
+		const second = harness(dir, { env: { ...SPAWN, [SPAWN_MAX_ENV]: "1" }, sessionId: "019fee64-heir" });
+		await second.settle(85);
+
+		expect(second.notes()).toHaveLength(2);
+		expect(second.spawns).toHaveLength(0);
+		expect(second.notifications.at(-1)?.message).toContain(SPAWN_MAX_ENV);
+	});
+
+	it("never spawns at all with a cap of zero", async () => {
+		const h = harness(dir, { env: { ...SPAWN, [SPAWN_MAX_ENV]: "0" } });
+		await h.settle(85);
+
+		expect(h.notes()).toHaveLength(1);
+		expect(h.spawns).toHaveLength(0);
+	});
+
+	// Cancelled means the session was never replaced, so this context is still alive to say so.
+	it("reports a cancelled successor and leaves the note in place", async () => {
+		const h = harness(dir, { env: SPAWN, newSessionCancelled: true });
+		await h.settle(85);
+
+		expect(h.notes()).toHaveLength(1);
+		expect(h.spawns).toHaveLength(0);
+		expect(h.notifications.at(-1)?.message).toContain("cancelled");
+	});
+
+	it("stands down entirely once /handoff has written a note", async () => {
+		const h = harness(dir, { env: SPAWN, handoffWritten: true });
+		await h.settle(95);
+
+		expect(h.notes()).toHaveLength(0);
+		expect(h.spawns).toHaveLength(0);
+	});
+
+	// No session file means no transcript for the successor to read back through.
+	it("does not spawn when the session is not recorded", async () => {
+		const h = harness(dir, { env: SPAWN, sessionFile: undefined });
+		await h.settle(85);
+
+		expect(h.notes()).toHaveLength(0);
+		expect(h.spawns).toHaveLength(0);
+	});
+
+	it("does not compose when the crossing cannot spawn anyway", async () => {
+		let calls = 0;
+		const h = harness(dir, {
+			env: SPAWN,
+			pendingMessages: true,
+			compose: async () => {
+				calls++;
+				return { body: "unused", kickoff: "unused" };
+			},
+		});
+		await h.settle(85);
+
+		expect(calls).toBe(0);
 		expect(h.notes()).toHaveLength(1);
 	});
 });

@@ -2,11 +2,13 @@ import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
 	DEFAULT_MODE,
+	DEFAULT_SPAWN_MAX,
 	DEFAULT_THRESHOLD_PERCENT,
 	evaluateWatch,
 	MODE_ENV,
 	REARM_MARGIN_PERCENT,
 	readWatchConfig,
+	SPAWN_MAX_ENV,
 	THRESHOLD_ENV,
 	type WatchConfig,
 } from "../watcher.ts";
@@ -15,20 +17,20 @@ function usage(percent: number | null): ContextUsage {
 	return { tokens: percent === null ? null : 1000, contextWindow: 200_000, percent };
 }
 
-const CONFIG: WatchConfig = { mode: "propose", thresholdPercent: 80 };
+const CONFIG: WatchConfig = { mode: "propose", thresholdPercent: 80, spawnMax: 10 };
 
 describe("readWatchConfig", () => {
 	// The default is deliberately the non-modal one: a dialog disposes any open selector,
 	// blocks a quit requested mid-run, and eats the next scripted Enter.
 	it("defaults to writing the note at 80% with nothing set", () => {
 		expect(readWatchConfig({})).toEqual({
-			config: { mode: "auto", thresholdPercent: DEFAULT_THRESHOLD_PERCENT },
+			config: { mode: "auto", thresholdPercent: DEFAULT_THRESHOLD_PERCENT, spawnMax: DEFAULT_SPAWN_MAX },
 			warnings: [],
 		});
 		expect(DEFAULT_MODE).toBe("auto");
 	});
 
-	it.each(["off", "notify", "propose", "auto"] as const)("accepts mode %s", (mode) => {
+	it.each(["off", "notify", "propose", "auto", "spawn"] as const)("accepts mode %s", (mode) => {
 		expect(readWatchConfig({ [MODE_ENV]: mode }).config.mode).toBe(mode);
 	});
 
@@ -42,7 +44,7 @@ describe("readWatchConfig", () => {
 		const result = readWatchConfig({ [MODE_ENV]: "enabled" });
 		expect(result.config.mode).toBe(DEFAULT_MODE);
 		expect(result.warnings).toEqual([
-			`${MODE_ENV}="enabled" is not one of off, notify, propose, auto; using "${DEFAULT_MODE}".`,
+			`${MODE_ENV}="enabled" is not one of off, notify, propose, auto, spawn; using "${DEFAULT_MODE}".`,
 		]);
 	});
 
@@ -59,6 +61,23 @@ describe("readWatchConfig", () => {
 
 	it("reports both problems at once", () => {
 		expect(readWatchConfig({ [MODE_ENV]: "yes", [THRESHOLD_ENV]: "wat" }).warnings).toHaveLength(2);
+	});
+
+	// Zero is a setting, not a mistake: "write the note, never spawn".
+	// `1e3` is included on purpose: `Number()` reads it, and the threshold parser accepts the
+	// same spelling, so rejecting it here would be an inconsistency rather than a guard.
+	it.each([
+		["0", 0],
+		["3", 3],
+		["1e3", 1000],
+	])("reads a spawn cap of %s", (raw, expected) => {
+		expect(readWatchConfig({ [SPAWN_MAX_ENV]: raw }).config.spawnMax).toBe(expected);
+	});
+
+	it.each(["-1", "2.5", "lots"])("warns and keeps the default on spawn cap %j", (raw) => {
+		const result = readWatchConfig({ [SPAWN_MAX_ENV]: raw });
+		expect(result.config.spawnMax).toBe(DEFAULT_SPAWN_MAX);
+		expect(result.warnings).toHaveLength(1);
 	});
 });
 
@@ -97,7 +116,8 @@ describe("evaluateWatch", () => {
 	});
 
 	it("never acts when the mode is off", () => {
-		expect(evaluateWatch(usage(99), { mode: "off", thresholdPercent: 80 }, true)).toEqual({ act: false, armed: true });
+		const off: WatchConfig = { mode: "off", thresholdPercent: 80, spawnMax: 10 };
+		expect(evaluateWatch(usage(99), off, true)).toEqual({ act: false, armed: true });
 	});
 
 	it("acts immediately on a session that starts over the line", () => {
