@@ -1824,14 +1824,7 @@ export class InteractiveMode {
 			},
 			commandContextActions: {
 				waitForIdle: () => this.session.waitForIdle(),
-				newSession: async (options) => {
-					this.clearStatusIndicator();
-					try {
-						return await this.runtimeHost.newSession(options);
-					} catch (error: unknown) {
-						return this.handleFatalRuntimeError("Failed to create session", error);
-					}
-				},
+				newSession: (options) => this.startExtensionSession(options),
 				fork: async (entryId, options) => {
 					try {
 						const result = await this.runtimeHost.fork(entryId, options);
@@ -1977,6 +1970,24 @@ export class InteractiveMode {
 	}
 
 	/**
+	 * Replace the current session on an extension's behalf.
+	 *
+	 * Shared by the two contexts extensions can call `newSession()` from — the bound session
+	 * actions and the shortcut context below — so both clear the status indicator and route a
+	 * runtime failure the same way.
+	 */
+	private async startExtensionSession(
+		options?: Parameters<AgentSessionRuntime["newSession"]>[0],
+	): Promise<{ cancelled: boolean }> {
+		this.clearStatusIndicator();
+		try {
+			return await this.runtimeHost.newSession(options);
+		} catch (error: unknown) {
+			return this.handleFatalRuntimeError("Failed to create session", error);
+		}
+	}
+
+	/**
 	 * Set up keyboard shortcuts registered by extensions.
 	 */
 	private setupExtensionShortcuts(extensionRunner: ExtensionRunner): void {
@@ -2004,6 +2015,7 @@ export class InteractiveMode {
 			shutdown: () => {
 				this.shutdownRequested = true;
 			},
+			newSession: (options) => this.startExtensionSession(options),
 			getContextUsage: () => this.session.getContextUsage(),
 			compact: (options) => {
 				void (async () => {

@@ -338,6 +338,24 @@ export interface ExtensionContext {
 	hasPendingMessages(): boolean;
 	/** Gracefully shutdown pi and exit. Available in all contexts. */
 	shutdown(): void;
+	/**
+	 * Start a new session, optionally with initialization. Available in all contexts.
+	 *
+	 * Here rather than on `ExtensionCommandContext` because event handlers are where
+	 * autonomous session continuation is decided — an extension that notices a session is
+	 * finished (context exhausted, work handed off) has only the plain context to act on.
+	 * Same reasoning that already puts `shutdown()` above: per-mode-wired session actions
+	 * belong on event contexts. `fork`/`switchSession`/`navigateTree` stay command-only;
+	 * they resolve a user's selection, not a runtime decision.
+	 *
+	 * The caller's context is invalidated by the replacement, so all post-switch work must
+	 * use the `withSession` context.
+	 */
+	newSession(options?: {
+		parentSession?: string;
+		setup?: (sessionManager: SessionManager) => Promise<void>;
+		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
+	}): Promise<{ cancelled: boolean }>;
 	/** Get current context usage for the active model. */
 	getContextUsage(): ContextUsage | undefined;
 	/** Trigger compaction without awaiting completion. */
@@ -356,13 +374,6 @@ export interface ExtensionCommandContext extends ExtensionContext {
 
 	/** Wait for the agent to finish streaming */
 	waitForIdle(): Promise<void>;
-
-	/** Start a new session, optionally with initialization. */
-	newSession(options?: {
-		parentSession?: string;
-		setup?: (sessionManager: SessionManager) => Promise<void>;
-		withSession?: (ctx: ReplacedSessionContext) => Promise<void>;
-	}): Promise<{ cancelled: boolean }>;
 
 	/** Fork from a specific entry, creating a new session file. */
 	fork(
