@@ -356,8 +356,8 @@ reasons that hold up:
   | `spawn` | compose the note, write it, then start the successor on its kickoff |
 
   `PI_HANDOFF_WATCH_AT` is the percent, default 80. `PI_HANDOFF_SPAWN_MAX` caps successor
-  spawns per process, default 10. A value outside `(0, 100]`, a non-integer cap, or an
-  unknown mode falls back to the default **and warns once** — a typo that silently
+  spawns per process, default 10. A value outside `(0, 100]`, a cap that is not a
+  non-negative integer, or an unknown mode falls back to the default **and warns once** — a typo that silently
   disables the watcher is the failure this exists to prevent.
 
   **Why `auto` is the default and `propose` is opt-in.** pi's extension selector is not an
@@ -522,9 +522,13 @@ successor. The flow at a settle crossing:
    locked decision 6 doing what it was stored for.
 
 **Spawn only from the settle path.** The `session_before_compact` crossing fires
-*inside* the agent run; replacing the session there is the stale-context footgun. That
+*inside* the agent run, and spawning there does not merely risk a stale context — it
+**hangs pi**: replacing a session aborts the old one and waits for it to go idle, and the
+run cannot go idle until the handler doing the replacing returns. (Found in review, PR
+#19 F1; `newSession`'s own doc in `extensions/types.ts` now carries the trace.) That
 crossing writes the note and sets a `spawnPending` flag; the run's own settle — which
-always follows, `_emitAgentSettled` runs in the loop's `finally` — performs the spawn.
+always follows, `_emitAgentSettled` runs in the loop's `finally` — performs the spawn,
+by which point the run is over and both problems are gone.
 
 **Skips:** everything the watcher already skips, plus `hasPendingMessages()` — queued
 follow-ups mean the session is not done. **Runaway guard:** a module-level generation

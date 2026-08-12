@@ -1,8 +1,8 @@
 # Draft upstream issue — expose `newSession()` on `ExtensionContext`
 
 **Status: draft, not posted.** `CONTRIBUTING.md` auto-closes PRs from contributors
-without `lgtm`, and ksdisch/pi#7968 and #7922 were both auto-closed by that gate,
-so the gated path is a Contribution Proposal issue first. Kyle posts this himself
+without `lgtm`, and earendil-works/pi#7968 and #7922 — both yours — were closed by
+that bot, so the gated path is a Contribution Proposal issue first. Kyle posts this himself
 when he wants to; nothing here goes to `earendil-works/pi` automatically.
 
 Use the **Contribution Proposal** template
