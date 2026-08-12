@@ -10,7 +10,7 @@ import {
 	HANDOFF_SCHEMA,
 	type HandoffNote,
 	handoffsDir,
-	isWriterAlive,
+	isForeignWriterAlive,
 	listPendingNotePaths,
 	noteFilename,
 	parseNote,
@@ -124,19 +124,25 @@ describe("parseNote rejection", () => {
 	});
 });
 
-describe("isWriterAlive", () => {
-	it("reports this process alive", () => {
-		expect(isWriterAlive(sampleNote({ source: "watch", pid: String(process.pid) }))).toBe(true);
+describe("isForeignWriterAlive", () => {
+	it("reports another live process as a live foreign writer", () => {
+		expect(isForeignWriterAlive(sampleNote({ source: "watch", pid: String(process.ppid) }))).toBe(true);
+	});
+
+	// pi spawns successor sessions in-process, so our own pid means "the previous session in
+	// this process wrote this for us" — a note to read, not a sibling's to leave alone.
+	it("does not count this process as foreign", () => {
+		expect(isForeignWriterAlive(sampleNote({ source: "watch", pid: String(process.pid) }))).toBe(false);
 	});
 
 	it("reports a pid no process can hold as dead", () => {
-		expect(isWriterAlive(sampleNote({ source: "watch", pid: "99999999" }))).toBe(false);
+		expect(isForeignWriterAlive(sampleNote({ source: "watch", pid: "99999999" }))).toBe(false);
 	});
 
 	// Every writer but the watcher has already stopped, and a hand-edited note may carry
 	// anything: an unusable pid must read as dead so the note is never hidden.
 	it.each([undefined, "", "not-a-pid", "0", "-1", "12.5"])("reports pid %j as dead", (pid) => {
-		expect(isWriterAlive(sampleNote({ pid }))).toBe(false);
+		expect(isForeignWriterAlive(sampleNote({ pid }))).toBe(false);
 	});
 });
 

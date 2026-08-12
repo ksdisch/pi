@@ -13,7 +13,7 @@ import {
 	archiveNote,
 	type HandoffNote,
 	type HandoffSource,
-	isWriterAlive,
+	isForeignWriterAlive,
 	listPendingNotePaths,
 	readNote,
 } from "./notes.ts";
@@ -50,7 +50,12 @@ export function scanPendingNotes(cwd: string): PendingScan {
 		// someone else's in-progress snapshot and archive a note that was never theirs. Left
 		// in place rather than skipped for good: once that process exits, this becomes an
 		// ordinary pending note, which is exactly the crash-seatbelt case it exists for.
-		if (isWriterAlive(note)) continue;
+		//
+		// Notes from *this* process are read normally. This scan runs once, from `session_start`,
+		// and the watcher cannot write before a run has settled — so an own-pid note is always a
+		// previous session in this process, i.e. an in-process successor (`/new`,
+		// `ctx.newSession()`) reading the briefing that was written for it.
+		if (isForeignWriterAlive(note)) continue;
 		valid.push({ path, note });
 	}
 

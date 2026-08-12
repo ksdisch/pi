@@ -392,11 +392,20 @@ reasons that hold up:
   (`AGENTS.md` § Git), and the reader gates only on `session_start` reason, so without a
   guard a sibling session would ingest another session's in-progress snapshot as its
   briefing and archive it `consumed_by` itself. So watch notes carry the writer's `pid`,
-  and `scanPendingNotes` skips any note whose writer is still alive (`isWriterAlive`,
-  `kill(pid, 0)`; EPERM counts as alive). Skipped, not consumed: the note stays pending,
-  so once that process exits it becomes an ordinary pending note — which is exactly the
-  crash-seatbelt case. Pid reuse can make a dead writer look alive; that direction leaves
-  the note on disk to be read later rather than consumed by the wrong session now.
+  and `scanPendingNotes` skips any note whose writer is a *different* live process
+  (`isForeignWriterAlive`, `kill(pid, 0)`; EPERM counts as alive). Skipped, not consumed:
+  the note stays pending, so once that process exits it becomes an ordinary pending note —
+  which is exactly the crash-seatbelt case. Pid reuse can make a dead writer look alive;
+  that direction leaves the note on disk to be read later rather than consumed by the wrong
+  session now.
+
+  "Different" is the load-bearing word. pi's successor sessions run **in-process**: `/new`
+  and `ctx.newSession()` fire `session_start` with `reason: "new"` and the same pid, so a
+  note carrying our own pid is the previous session in this process briefing this one — the
+  whole point. A guard without that exception starves the successor it was built for, which
+  is what the first draft of it did. The scan runs once, from `session_start`, and the
+  watcher cannot write before a run has settled, so an own-pid note is never one this
+  session wrote.
 - **Note content:** the same mechanical `buildDigestNote`, with `trigger: "watch"` —
   `source: watch` in frontmatter and a Context section that says the session was still
   running. The shutdown wording ("written when the previous session exited") would be a

@@ -51,7 +51,8 @@ export interface HandoffFrontmatter {
 	/**
 	 * Process id of the writing session, recorded only by the context-fullness watcher —
 	 * the one writer whose session is usually still running when its note lands. Readers use
-	 * it to tell a live snapshot from a dead session's seatbelt (see `isWriterAlive`).
+	 * it to tell another session's live snapshot from a note written for them to read
+	 * (see `isForeignWriterAlive`).
 	 */
 	pid?: string;
 	/** Stamped on archive: session id that ingested this note. */
@@ -317,7 +318,13 @@ export function listArchivedNotePaths(cwd: string): string[] {
 }
 
 /**
- * Is the session that wrote this note still running?
+ * Was this note written by a *different* process that is still running?
+ *
+ * "Different" is load-bearing. pi's successor sessions run in-process — `/new` and
+ * `ctx.newSession()` fire `session_start` with `reason: "new"` and the same pid — so a note
+ * carrying our own pid is the previous session in this process handing off to this one, which
+ * is precisely the case that must be read rather than skipped. Only a live *sibling* process
+ * has a note we have no business consuming.
  *
  * Only watch notes carry a pid — every other writer has stopped by the time its note exists.
  * `kill(pid, 0)` sends no signal; it reports reachability. EPERM means the process exists and
@@ -327,9 +334,9 @@ export function listArchivedNotePaths(cwd: string): string[] {
  * Pid reuse can make a dead writer look alive. That direction is the safe one: the note stays
  * pending and is read later, rather than being consumed by the wrong session now.
  */
-export function isWriterAlive(note: HandoffNote): boolean {
+export function isForeignWriterAlive(note: HandoffNote): boolean {
 	const pid = Number(note.frontmatter.pid);
-	if (!Number.isInteger(pid) || pid <= 0) return false;
+	if (!Number.isInteger(pid) || pid <= 0 || pid === process.pid) return false;
 	try {
 		process.kill(pid, 0);
 		return true;
