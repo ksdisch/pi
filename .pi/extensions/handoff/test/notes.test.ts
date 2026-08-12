@@ -10,6 +10,7 @@ import {
 	HANDOFF_SCHEMA,
 	type HandoffNote,
 	handoffsDir,
+	isWriterAlive,
 	listPendingNotePaths,
 	noteFilename,
 	parseNote,
@@ -120,6 +121,22 @@ describe("parseNote rejection", () => {
 	it("defaults a missing kickoff rather than discarding the note", () => {
 		const text = serializeNote(sampleNote()).replace(/^kickoff:.*\n/m, "");
 		expect(parseNote(text)?.frontmatter.kickoff).toBe("");
+	});
+});
+
+describe("isWriterAlive", () => {
+	it("reports this process alive", () => {
+		expect(isWriterAlive(sampleNote({ source: "watch", pid: String(process.pid) }))).toBe(true);
+	});
+
+	it("reports a pid no process can hold as dead", () => {
+		expect(isWriterAlive(sampleNote({ source: "watch", pid: "99999999" }))).toBe(false);
+	});
+
+	// Every writer but the watcher has already stopped, and a hand-edited note may carry
+	// anything: an unusable pid must read as dead so the note is never hidden.
+	it.each([undefined, "", "not-a-pid", "0", "-1", "12.5"])("reports pid %j as dead", (pid) => {
+		expect(isWriterAlive(sampleNote({ pid }))).toBe(false);
 	});
 });
 

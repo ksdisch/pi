@@ -7,9 +7,13 @@ Pick rationale: `docs/backlog-hygiene/2026-08-11.md`
 
 A session that fills its context window has already passed the point where a
 handoff should have been written. Today nothing notices: the only automatic note
-is the shutdown digest, which fires at quit — after compaction has already
-thrown away the history the note would have summarized. `/handoff` is reliable
-but requires the user to remember.
+is the shutdown digest, which fires at quit — and never at all if the session
+dies without a clean exit, which is where a session at the end of its window
+tends to end up. `/handoff` is reliable but requires the user to remember.
+
+(An earlier draft of this plan said the digest loses pre-compaction history.
+That is false — it reads `getBranch()`, which keeps every entry. Corrected
+during review; see F2 in the review mailbox.)
 
 ## What gets built
 
@@ -31,8 +35,8 @@ TUI editor. Removing that constraint is backlog item 2's problem.
 |---|---|
 | `off` | nothing |
 | `notify` | report the crossing, write nothing |
-| `propose` (default) | TUI: 3-way select (write note / compose via `/handoff` / not now). No TUI: degrades to `auto` — a proposal nobody can answer loses the note |
-| `auto` | write the note, report the path |
+| `propose` | TUI: 3-way select (write note / compose via `/handoff` / not now). No TUI: degrades to `auto` — a proposal nobody can answer loses the note |
+| `auto` (default) | write the note, report the path |
 
 `PI_HANDOFF_WATCH_AT` sets the percent threshold (default 80). Bad values fall
 back to the default and warn once — never silently.
@@ -86,3 +90,8 @@ so `npm run check` is unaffected (it does not reach `.pi/` anyway).
 - The first live smoke reported `Context is 0% full` at a sub-1% threshold.
   Percent rendering now keeps one decimal below 10 — a rounded-to-zero
   measurement reads as broken rather than small.
+- Review round 1 changed three design decisions: a second trigger on
+  `session_before_compact` (pi compacts inside the agent run, so settle alone
+  misses the headline crossing), `auto` rather than `propose` as the default
+  (a modal at an arbitrary settle seizes the TUI), and a writer-liveness guard
+  in the reader (a live session's note was being ingested by its siblings).

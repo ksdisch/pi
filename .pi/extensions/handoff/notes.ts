@@ -48,6 +48,12 @@ export interface HandoffFrontmatter {
 	model?: string;
 	/** Ready-made opening prompt for a successor session. The v2 autonomous-spawner contract. */
 	kickoff: string;
+	/**
+	 * Process id of the writing session, recorded only by the context-fullness watcher —
+	 * the one writer whose session is usually still running when its note lands. Readers use
+	 * it to tell a live snapshot from a dead session's seatbelt (see `isWriterAlive`).
+	 */
+	pid?: string;
 	/** Stamped on archive: session id that ingested this note. */
 	consumed_by?: string;
 	consumed_at?: string;
@@ -70,6 +76,7 @@ const KEY_ORDER = [
 	"source",
 	"model",
 	"kickoff",
+	"pid",
 	"consumed_by",
 	"consumed_at",
 	"superseded_by",
@@ -173,6 +180,7 @@ export function parseNote(text: string): HandoffNote | undefined {
 	};
 	if (fields.session_file) frontmatter.session_file = fields.session_file;
 	if (fields.model) frontmatter.model = fields.model;
+	if (fields.pid) frontmatter.pid = fields.pid;
 	if (fields.consumed_by) frontmatter.consumed_by = fields.consumed_by;
 	if (fields.consumed_at) frontmatter.consumed_at = fields.consumed_at;
 	if (fields.superseded_by) frontmatter.superseded_by = fields.superseded_by;
@@ -306,6 +314,28 @@ export function listPendingNotePaths(cwd: string): string[] {
 /** Archived note paths, oldest first. Used by the ghost responder to find its predecessor. */
 export function listArchivedNotePaths(cwd: string): string[] {
 	return listNotePaths(archiveDir(cwd));
+}
+
+/**
+ * Is the session that wrote this note still running?
+ *
+ * Only watch notes carry a pid — every other writer has stopped by the time its note exists.
+ * `kill(pid, 0)` sends no signal; it reports reachability. EPERM means the process exists and
+ * belongs to someone else, which still counts as alive. Anything without a usable pid is
+ * reported dead, so the absence of the field never hides a note.
+ *
+ * Pid reuse can make a dead writer look alive. That direction is the safe one: the note stays
+ * pending and is read later, rather than being consumed by the wrong session now.
+ */
+export function isWriterAlive(note: HandoffNote): boolean {
+	const pid = Number(note.frontmatter.pid);
+	if (!Number.isInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		return (err as NodeJS.ErrnoException).code === "EPERM";
+	}
 }
 
 export function readNote(filePath: string): HandoffNote | undefined {

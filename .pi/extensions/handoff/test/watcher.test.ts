@@ -1,6 +1,7 @@
 import type { ContextUsage } from "@earendil-works/pi-coding-agent";
 import { describe, expect, it } from "vitest";
 import {
+	DEFAULT_MODE,
 	DEFAULT_THRESHOLD_PERCENT,
 	evaluateWatch,
 	MODE_ENV,
@@ -17,11 +18,14 @@ function usage(percent: number | null): ContextUsage {
 const CONFIG: WatchConfig = { mode: "propose", thresholdPercent: 80 };
 
 describe("readWatchConfig", () => {
-	it("defaults to proposing at 80% with nothing set", () => {
+	// The default is deliberately the non-modal one: a dialog disposes any open selector,
+	// blocks a quit requested mid-run, and eats the next scripted Enter.
+	it("defaults to writing the note at 80% with nothing set", () => {
 		expect(readWatchConfig({})).toEqual({
-			config: { mode: "propose", thresholdPercent: DEFAULT_THRESHOLD_PERCENT },
+			config: { mode: "auto", thresholdPercent: DEFAULT_THRESHOLD_PERCENT },
 			warnings: [],
 		});
+		expect(DEFAULT_MODE).toBe("auto");
 	});
 
 	it.each(["off", "notify", "propose", "auto"] as const)("accepts mode %s", (mode) => {
@@ -36,8 +40,10 @@ describe("readWatchConfig", () => {
 	// believes the watcher is on, and nothing ever tells them it is not.
 	it("warns and keeps the default on an unknown mode", () => {
 		const result = readWatchConfig({ [MODE_ENV]: "enabled" });
-		expect(result.config.mode).toBe("propose");
-		expect(result.warnings).toEqual([`${MODE_ENV}="enabled" is not one of off, notify, propose, auto; using "propose".`]);
+		expect(result.config.mode).toBe(DEFAULT_MODE);
+		expect(result.warnings).toEqual([
+			`${MODE_ENV}="enabled" is not one of off, notify, propose, auto; using "${DEFAULT_MODE}".`,
+		]);
 	});
 
 	it("reads a numeric threshold, including a fractional one", () => {

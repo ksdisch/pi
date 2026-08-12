@@ -62,6 +62,30 @@ describe("scanPendingNotes", () => {
 		expect(scan.older).toEqual([]);
 	});
 
+	// Concurrent pi sessions in one cwd are normal in this repo. A watch note is written while
+	// its session is still working, so ingesting one would hand this session someone else's
+	// in-progress snapshot and archive a note that was never theirs.
+	it("skips a watch note whose writing process is still alive", () => {
+		writeNote(dir, note({ source: "watch", pid: String(process.pid) }));
+		expect(scanPendingNotes(dir)).toEqual({ older: [], corrupt: [] });
+	});
+
+	it("ingests a watch note once its writer is gone — the crash-seatbelt case", () => {
+		writeNote(dir, note({ source: "watch", pid: "99999999", session_id: "dddddddd" }));
+		expect(scanPendingNotes(dir).ingest?.note.frontmatter.session_id).toBe("dddddddd");
+	});
+
+	it("falls back to an older note rather than the live one", () => {
+		writeNote(dir, note({ created: "2026-08-09T10:00:00.000Z", session_id: "aaaaaaaa" }));
+		writeNote(dir, note({ created: "2026-08-10T22:15:00.000Z", session_id: "bbbbbbbb", source: "watch", pid: String(process.pid) }));
+
+		const scan = scanPendingNotes(dir);
+		expect(scan.ingest?.note.frontmatter.session_id).toBe("aaaaaaaa");
+		// Left in place: once that process exits it becomes an ordinary pending note.
+		expect(scan.older).toEqual([]);
+		expect(scan.corrupt).toEqual([]);
+	});
+
 	it("ignores already-archived notes", () => {
 		writeNote(dir, note());
 		archiveDelivered(dir, scanPendingNotes(dir), "consumer", "2026-08-11T09:00:00.000Z");
