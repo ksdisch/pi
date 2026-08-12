@@ -11,7 +11,8 @@ const VIEWPORT = { width: 960, height: 600 };
 /**
  * Ceiling on a single maneuver, independent of what the caller asks for. The
  * driver runs one command at a time (common.mjs serializes them), so an
- * over-long /move blocks every later command including /shutdown.
+ * over-long /move blocks every later queued command. (/shutdown is the one
+ * exception — common.mjs deliberately runs it off the chain.)
  */
 const MOVE_HARD_CAP_MS = 15_000;
 
@@ -73,6 +74,14 @@ const routes = {
 			const got = await waitFor(() => roomCode, 20_000);
 			if (!got) throw new Error("no room-created frame in 20s — is the relay on :3081 up?");
 		} catch (err) {
+			// The context created above already has a recording in flight. Close it
+			// first so Playwright finalizes the webm, then flush it under a name that
+			// says what it is — going straight to `browser.close()` strands it as
+			// `page@<hash>.webm` (see `closeForVideo` in common.mjs). Repeated failed
+			// boots overwrite the file; the last failure is the one worth watching.
+			const video = page?.video() ?? null;
+			await closeForVideo(page);
+			await saveVideo(video, "laptop-boot-failed");
 			await browser?.close().catch(() => {});
 			browser = null;
 			page = null;

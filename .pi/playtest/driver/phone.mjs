@@ -261,6 +261,14 @@ const routes = {
 				const ctx = await browser.newContext(contextOptions(VIEWPORT));
 				page = await ctx.newPage();
 			} catch (err) {
+				// Same orphaned-recording case as laptop.mjs /boot: finalize the context
+				// so `saveAs` still has a live connection, flush it under a recognizable
+				// name, and only then drop the browser. Otherwise the abandoned context's
+				// webm survives as `page@<hash>.webm` (see `closeForVideo` in common.mjs)
+				// and /shutdown never sees it, since it only saves the current page.
+				const video = page?.video() ?? null;
+				await closeForVideo(page);
+				await saveVideo(video, "phone-join-failed");
 				await browser?.close().catch(() => {});
 				browser = null;
 				page = null;
