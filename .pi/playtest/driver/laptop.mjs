@@ -141,7 +141,8 @@ const routes = {
 	 *
 	 * `arm` pre-commits the whole maneuver on a partner's cast: the astronaut
 	 * stands still until the trigger fires — "freeze" = enemyFrozen is on,
-	 * "platform" = platformCount rises above its arm-time value — then waits one
+	 * "platform" = platformCount rises above the lowest count seen since
+	 * arming — then waits one
 	 * human reaction (ARM_REACTION_MS) and runs the move. The wait aborts without
 	 * moving on death, win, or arm.timeoutMs; an armed player is still a
 	 * stationary target, and that exposure is playtest data, not a bug.
