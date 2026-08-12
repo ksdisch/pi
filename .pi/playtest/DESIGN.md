@@ -145,6 +145,11 @@ started the server; a dev server you started by hand is left alone.
   happens before the driver answers, so the orchestrator gives `/shutdown` a
   `SHUTDOWN_TIMEOUT_S` (90s) budget rather than a ping-sized one, and prints the
   path each driver reports saving instead of asserting the directory has files.
+- A laptop `/boot` that fails adds a third file to that directory,
+  `laptop-boot-failed.webm`, so a boot that never reached the game is still
+  watchable. Repeated failed boots overwrite it — it holds the latest failure.
+  There is no phone equivalent: a failed `/join` never gets as far as a page, so
+  it has no recording to save.
 
 The claude session that ran the pilot synthesizes the two player reports into the
 final critique for Kyle; players only report their own seat's experience.
