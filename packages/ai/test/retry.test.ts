@@ -217,6 +217,26 @@ describe("extractServerRetryDelayMs", () => {
 		expect(extractServerRetryDelayMs('{"retryDelay": "0s"}')).toBeUndefined();
 	});
 
+	it("ignores a seconds-shaped number sitting in unrelated prose", () => {
+		// An unanchored unit read "8 steps" as 8s. Since the longest match across
+		// both encodings wins, an incidental number could outrank the real RetryInfo.
+		expect(extractServerRetryDelayMs("429: retry in 8 steps")).toBeUndefined();
+		expect(extractServerRetryDelayMs('{"retryDelay": "3s"} — retry in 40 sessions')).toBe(4_000);
+	});
+
+	it("still reads the spelled-out unit", () => {
+		expect(extractServerRetryDelayMs("Please retry in 12 sec")).toBe(13_000);
+		expect(extractServerRetryDelayMs("Please retry in 5 seconds")).toBe(6_000);
+	});
+
+	it("does not clamp the longest delay a per-minute quota can legitimately state", () => {
+		// Pilot 2 captured 58.758s from a live free-tier 429; padded, that is 59.758s
+		// — 242ms under the old 60s ceiling. A slower window would have been clamped
+		// down and retried from inside itself, the under-wait this floor exists to stop.
+		expect(extractServerRetryDelayMs("Please retry in 58.758s")).toBe(59_758);
+		expect(extractServerRetryDelayMs('{"retryDelay": "60s"}')).toBe(61_000);
+	});
+
 	it("clamps an implausible delay so a bad value cannot stall a turn", () => {
 		expect(extractServerRetryDelayMs('{"retryDelay": "86400s"}')).toBe(MAX_SERVER_RETRY_DELAY_MS);
 	});

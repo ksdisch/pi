@@ -109,7 +109,8 @@ const RETRYABLE_PROVIDER_ERROR_PATTERN = buildProviderErrorPattern([
 ]);
 
 /**
- * Retry policy: bounded attempts with exponential backoff (`baseDelayMs * 2^(attempt-1)`).
+ * Retry policy: bounded attempts with exponential backoff (`baseDelayMs * 2^(attempt-1)`),
+ * floored at any retry delay the provider stated in the error itself.
  * Matches `settings.retry` (`enabled`, `maxRetries`, `baseDelayMs`) in coding-agent; kept
  * here so the classifier and the policy-driven retry loop live together and stay reusable
  * by the SDK and other callers.
@@ -118,7 +119,11 @@ export interface RetryPolicy {
 	enabled: boolean;
 	/** Max retry attempts (0 = no retries). The initial call never counts as a retry. */
 	maxRetries: number;
-	/** Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)` before jitter. */
+	/**
+	 * Base delay in ms. Per-attempt delay is `baseDelayMs * 2^(attempt-1)`, floored at any
+	 * retry delay the provider stated (clamped to {@link MAX_SERVER_RETRY_DELAY_MS}) — so
+	 * this does not bound the wait on its own, not even at `baseDelayMs: 0`.
+	 */
 	baseDelayMs: number;
 }
 
@@ -276,8 +281,23 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	return RETRYABLE_PROVIDER_ERROR_PATTERN.test(errorMessage);
 }
 
-/** Upper bound on a server-stated retry delay callers should honor. */
-export const MAX_SERVER_RETRY_DELAY_MS = 60_000;
+/**
+ * Upper bound on a server-stated retry delay callers should honor.
+ *
+ * Sized off what a *legitimate* delay can be, not off a round number. The
+ * extractor only ever runs on errors {@link isRetryableAssistantError} already
+ * accepted, which for Google means a per-minute REQUEST-rate quota — a window
+ * that by definition closes inside a rolling 60s — so 60s plus
+ * {@link SERVER_RETRY_DELAY_PAD_MS} is the longest honest value. A 60s ceiling
+ * left no room for it: a captured pilot 429 stated 58.758s, which pads to
+ * 59.758s and cleared the old clamp by 242ms. Anything slower would have been
+ * silently clamped down and retried inside the window — the exact under-wait
+ * this floor exists to prevent. 90s clears every real per-minute delay while
+ * still capping a malformed or hostile value at 90s per attempt (4.5 min across
+ * the default 3 retries), and the backoff sleep honors the abort signal
+ * throughout, so a stalled turn is always cancellable.
+ */
+export const MAX_SERVER_RETRY_DELAY_MS = 90_000;
 
 /**
  * A throttle window Google states to the second is easy to under-wait: a
@@ -290,8 +310,12 @@ const SERVER_RETRY_DELAY_PATTERNS: readonly RegExp[] = [
 	// `"retryDelay": "25s"`, text branch double-stringified `\"retryDelay\": \"25s\"`).
 	/\\?"retryDelay\\?":\s*\\?"(\d+(?:\.\d+)?)s/g,
 	// The same delay in the prose Google puts in `error.message`, at full
-	// precision: "Please retry in 25.309369594s."
-	/retry in (\d+(?:\.\d+)?)\s*s/gi,
+	// precision: "Please retry in 25.309369594s." The unit is anchored so the
+	// pattern cannot read a seconds count out of unrelated prose — an
+	// unanchored `s` also matches "retry in 8 steps", and since the longest
+	// match across both patterns wins, that number would outrank the
+	// authoritative RetryInfo value.
+	/retry in (\d+(?:\.\d+)?)\s*s(?:ec(?:onds?)?)?\b/gi,
 ];
 
 /** Padding over the stated delay — retrying on the exact boundary still throttles. */

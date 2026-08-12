@@ -261,6 +261,11 @@ const routes = {
 				const ctx = await browser.newContext(contextOptions(VIEWPORT));
 				page = await ctx.newPage();
 			} catch (err) {
+				// No video flush here, unlike laptop.mjs /boot. This catch is reachable
+				// only from inside `if (!page)` and `page` is assigned by the last
+				// statement above, so there is never a page — and so never a recording —
+				// to save. The context, if one was built, has no page either and goes
+				// down with the browser on the next line.
 				await browser?.close().catch(() => {});
 				browser = null;
 				page = null;
