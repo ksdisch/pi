@@ -31,6 +31,7 @@ import { buildDigestNote } from "./digest.ts";
 import { answerAsPredecessor, findPredecessor, renderTranscript } from "./ghost.ts";
 import { HANDOFF_SCHEMA, type HandoffNote, writeNote } from "./notes.ts";
 import { registerReader } from "./reader.ts";
+import { registerWatcher } from "./watcher.ts";
 
 export interface HandoffState {
 	/** Set by `/handoff`. Suppresses the shutdown digest, which would supersede a richer note. */
@@ -315,4 +316,5 @@ export default function (pi: ExtensionAPI) {
 	registerHandoffCommand(pi, state);
 	registerGhostTool(pi);
 	registerShutdownDigest(pi, state);
+	registerWatcher(pi, { handoffWritten: () => state.wroteNoteThisSession });
 }

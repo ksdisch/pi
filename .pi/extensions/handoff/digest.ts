@@ -156,6 +156,13 @@ export function collectFilesTouched(entries: SessionEntry[]): FilesTouched {
 	return { read: read.filter((path) => !modified.includes(path)), modified };
 }
 
+/**
+ * What prompted the digest. `shutdown` is the session-exit seatbelt; `watch` is the
+ * context-fullness watcher, which writes mid-session — so the note must not tell the
+ * successor that the writing session ended.
+ */
+export type DigestTrigger = "shutdown" | "watch";
+
 export interface DigestInput {
 	entries: SessionEntry[];
 	sessionId: string;
@@ -164,6 +171,34 @@ export interface DigestInput {
 	model: string | undefined;
 	/** ISO 8601. Passed in rather than read from the clock so this stays pure. */
 	created: string;
+	/** Defaults to `shutdown`. */
+	trigger?: DigestTrigger;
+	/** Context usage percent at the time of a `watch` note. Reported in the body. */
+	contextPercent?: number;
+}
+
+/**
+ * One decimal below 10, whole above. Rounding a small figure to a bare integer prints
+ * "0% full", which reads as a broken measurement rather than a small one.
+ */
+export function formatContextPercent(percent: number): string {
+	return percent < 10 ? percent.toFixed(1) : String(Math.round(percent));
+}
+
+function renderContextSection(input: DigestInput): string {
+	if (input.trigger === "watch") {
+		const at =
+			input.contextPercent === undefined ? "" : ` at ${formatContextPercent(input.contextPercent)}% context usage`;
+		return [
+			`Mechanical digest written mid-session${at}, when the context-fullness watcher fired.`,
+			"That session may have continued afterwards; check for a newer note before assuming this",
+			"is where it stopped. No LLM summary was made; the transcript pointer below has the full history.",
+		].join("\n");
+	}
+	return [
+		"Mechanical digest written when the previous session exited. No LLM summary was made;",
+		"the transcript pointer below has the full history.",
+	].join("\n");
 }
 
 /**
@@ -219,8 +254,7 @@ export function buildDigestNote(input: DigestInput): HandoffNote | undefined {
 
 	const body = [
 		"## Context",
-		"Mechanical digest written when the previous session exited. No LLM summary was made;",
-		"the transcript pointer below has the full history.",
+		renderContextSection(input),
 		"",
 		"## Next steps",
 		lastRequest ? `Pick up from the last request: ${lastRequest}` : "No user request was recorded.",
@@ -241,7 +275,7 @@ export function buildDigestNote(input: DigestInput): HandoffNote | undefined {
 			session_file: input.sessionFile,
 			cwd: input.cwd,
 			created: input.created,
-			source: "digest",
+			source: input.trigger === "watch" ? "watch" : "digest",
 			model: input.model,
 			kickoff: lastRequest ? `Continue: ${lastRequest}` : "Continue the previous session's work.",
 		},

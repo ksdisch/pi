@@ -23,7 +23,18 @@ import { basename, dirname, join, resolve } from "node:path";
 
 export const HANDOFF_SCHEMA = "pi-handoff/v1";
 
-export type HandoffSource = "command" | "digest";
+/**
+ * How the note was produced. `digest` and `watch` share the mechanical builder; they are
+ * distinguished because a `watch` note is written while its session is still running, so
+ * a successor must not read it as "that session is over."
+ */
+export type HandoffSource = "command" | "digest" | "watch";
+
+const SOURCES: HandoffSource[] = ["command", "digest", "watch"];
+
+function isHandoffSource(value: string | undefined): value is HandoffSource {
+	return value !== undefined && (SOURCES as string[]).includes(value);
+}
 
 export interface HandoffFrontmatter {
 	schema: string;
@@ -149,7 +160,7 @@ export function parseNote(text: string): HandoffNote | undefined {
 
 	if (fields.schema !== HANDOFF_SCHEMA) return undefined;
 	if (!fields.session_id || !fields.created) return undefined;
-	if (fields.source !== "command" && fields.source !== "digest") return undefined;
+	if (!isHandoffSource(fields.source)) return undefined;
 
 	const frontmatter: HandoffFrontmatter = {
 		schema: fields.schema,

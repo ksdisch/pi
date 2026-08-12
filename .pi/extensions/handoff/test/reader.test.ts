@@ -81,6 +81,13 @@ describe("buildMemo", () => {
 		expect(buildMemo(note({ source: "command" })).split("\n")[0]).toContain("(composed via /handoff)");
 	});
 
+	// "ended" would be a lie: the watcher writes while its session is still running.
+	it("says a watcher note was written, not that the session ended", () => {
+		expect(buildMemo(note({ source: "watch" })).split("\n")[0]).toBe(
+			"Handoff from session 019feda9, written 2026-08-10T22:15:00.000Z (context-fullness watcher, mid-session).",
+		);
+	});
+
 	it("carries the note body and a transcript pointer", () => {
 		const memo = buildMemo(note());
 		expect(memo).toContain("## Next steps\nWire the reader.");

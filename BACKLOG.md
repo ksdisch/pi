@@ -6,23 +6,28 @@ Groomed by `/backlog-hygiene`; see `docs/backlog-hygiene/` for decision briefs.
 
 ## Active (sequenced)
 
-1. **Context-fullness watcher + auto-proposed handoff** — on `agent_settled`,
-   check `ctx.getContextUsage()`; past a threshold, propose (or via a setting,
-   auto-run) the handoff note write and offer the existing successor spawn
-   (`.pi/extensions/handoff/index.ts:226`). First wedge of the
-   autonomous-sessions north star. Source: handoff DESIGN.md v2 hooks.
-   *Picked 2026-08-11 — see docs/backlog-hygiene/2026-08-11.md.*
-2. **Autonomous successor spawning (remaining slices)** — spawn without a
-   human confirm, including non-TUI modes (print/RPC). The `kickoff` note
-   field (`notes.ts:38`, `digest.ts:246`) is the contract. Depends on item 1
-   for stopping-point detection.
-3. **Slack/Telegram loop-in at decision points** — value materializes once
-   sessions run unattended; sequence after item 2. Needs a design pass and
+1. **Autonomous successor spawning** — spawn without a human confirm, including
+   non-TUI modes (print/RPC). The `kickoff` note field (`notes.ts:38`,
+   `digest.ts:246`) is the contract. Stopping-point detection now exists
+   (`watcher.ts`), but `newSession()` is only on `ExtensionCommandContext`, so
+   an event handler cannot spawn — closing that likely needs an upstream change,
+   not a fork-local one. Start there.
+2. **Slack/Telegram loop-in at decision points** — value materializes once
+   sessions run unattended; sequence after item 1. Needs a design pass and
    external credentials.
-4. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
+3. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
    the dated `.pi/handoffs/` history.
-5. **Walk-up note detection / cross-cwd routing** — small; no observed pain
+4. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
+
+## Shipped
+
+- **Context-fullness watcher + auto-proposed handoff** (2026-08-11, PR #14) —
+  `agent_settled` reads `ctx.getContextUsage()` and, past a configurable
+  threshold, proposes or auto-writes a mid-session handoff note; the successor
+  spawn is offered by teeing up `/handoff`. See the watcher section in
+  `.pi/extensions/handoff/DESIGN.md` and
+  `docs/build-plans/2026-08-11-context-fullness-watcher.md`.
 
 ## Parked / Retired
 

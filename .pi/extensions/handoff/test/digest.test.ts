@@ -238,6 +238,35 @@ describe("buildDigestNote", () => {
 		);
 	});
 
+	// A watcher note is written while its session is still working. Reusing the shutdown
+	// wording would tell the successor that session is over, which is exactly the mistake
+	// that makes a stale note look like a current one.
+	it("stamps a watch note as such and says the session was still running", () => {
+		const entries = [user("Wire the watcher"), assistant([{ type: "text", text: "Wired." }])];
+		const note = buildDigestNote({ ...DIGEST_BASE, entries, trigger: "watch", contextPercent: 82.4 });
+
+		expect(note?.frontmatter.source).toBe("watch");
+		expect(note?.body).toContain("mid-session at 82% context usage");
+		expect(note?.body).toContain("may have continued afterwards");
+		expect(note?.body).not.toContain("previous session exited");
+	});
+
+	// Observed in the first live run: a threshold set below 1% reported "0% full", which
+	// reads as a broken measurement rather than a small one.
+	it("keeps a decimal on a sub-10% figure", () => {
+		const entries = [user("hi"), assistant([{ type: "text", text: "hello" }])];
+		const note = buildDigestNote({ ...DIGEST_BASE, entries, trigger: "watch", contextPercent: 0.44 });
+		expect(note?.body).toContain("at 0.4% context usage");
+	});
+
+	it("omits the usage figure from a watch note when none was passed", () => {
+		const entries = [user("hi"), assistant([{ type: "text", text: "hello" }])];
+		const body = buildDigestNote({ ...DIGEST_BASE, entries, trigger: "watch" })?.body ?? "";
+
+		expect(body).toContain("written mid-session, when the context-fullness watcher fired");
+		expect(body).not.toContain("undefined");
+	});
+
 	it("omits the model field when no model is set", () => {
 		const entries = [user("hi"), assistant([{ type: "text", text: "hello" }])];
 		const note = buildDigestNote({ ...DIGEST_BASE, model: undefined, entries });

@@ -9,7 +9,15 @@
 
 import { basename } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { archiveNote, type HandoffNote, listPendingNotePaths, readNote } from "./notes.ts";
+import { archiveNote, type HandoffNote, type HandoffSource, listPendingNotePaths, readNote } from "./notes.ts";
+
+const SOURCE_LABELS: Record<HandoffSource, string> = {
+	command: "composed via /handoff",
+	digest: "shutdown digest",
+	// A watch note is written while its session is still running, so the banner must not
+	// claim that session is over — it may have worked for hours after this snapshot.
+	watch: "context-fullness watcher, mid-session",
+};
 
 export interface PendingScan {
 	/** Newest valid pending note — the one that gets injected. */
@@ -37,9 +45,10 @@ export function scanPendingNotes(cwd: string): PendingScan {
 }
 
 export function buildMemo(note: HandoffNote, olderPendingCount = 0): string {
+	const { session_id, created, source } = note.frontmatter;
 	const lines = [
-		`Handoff from session ${note.frontmatter.session_id.slice(0, 8)}, ended ${note.frontmatter.created}` +
-			` (${note.frontmatter.source === "command" ? "composed via /handoff" : "shutdown digest"}).`,
+		`Handoff from session ${session_id.slice(0, 8)}, ${source === "watch" ? "written" : "ended"} ${created}` +
+			` (${SOURCE_LABELS[source]}).`,
 		"",
 		note.body.trimEnd(),
 	];

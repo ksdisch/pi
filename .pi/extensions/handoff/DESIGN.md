@@ -64,6 +64,7 @@ session_file: /Users/kyle/.pi/agent/sessions/--...--/2026-08-10T21-52-05-564Z_01
 cwd: /Users/kyle/Projects/foo
 created: 2026-08-10T22:15:00.000Z
 source: command            # "command" (/handoff, LLM-composed) | "digest" (shutdown, mechanical)
+                           # | "watch" (context-fullness watcher, mechanical, mid-session)
 model: google/gemini-3.6-flash
 kickoff: "Continue implementing the reader module; start by wiring archive-on-delivery."
 ---
@@ -104,6 +105,7 @@ the project-local copy never double-load.
   compose.ts      # /handoff LLM composition (prompt + ctx.modelRegistry.complete)
   reader.ts       # pending-note detection, memo injection, archive-on-delivery
   ghost.ts        # ask_predecessor: answer questions from the predecessor's transcript
+  watcher.ts      # context-fullness watcher: config, threshold decision, agent_settled wiring
   DESIGN.md       # this document
 ```
 
@@ -308,10 +310,77 @@ the sibling `intercom` extension — the two compose rather than compete.
   tail-capped at 150k chars overall.
 - `notes.ts` gained `listArchivedNotePaths`; everything else is additive.
 
+## Context-fullness watcher (added 2026-08-11)
+
+The shutdown digest fires at quit, which on a long session is *after* compaction has
+elided the middle of the work it was supposed to summarize. The watcher fires earlier:
+on every `agent_settled`, it reads `ctx.getContextUsage()` and, past a threshold, gets a
+note written while the history is still there.
+
+- **Hook:** `pi.on("agent_settled", …)`. Handlers are awaited by
+  `_emitAgentSettled`, so the TUI proposal dialog does hold the settle path open until
+  it is answered. That is acceptable where it happens — the run is already finished and
+  the user is looking at the dialog — and is why dialogs are TUI-only (below).
+- **Settings** (environment, not CLI flags: the successor sessions this is groundwork
+  for are spawned as child processes, which inherit env and not argv):
+
+  | `PI_HANDOFF_WATCH` | At the threshold |
+  |---|---|
+  | `off` | nothing |
+  | `notify` | report the crossing; write nothing |
+  | `propose` (default) | TUI: 3-way select — write the note / compose via `/handoff` / not now |
+  | `auto` | write the note, report the path |
+
+  `PI_HANDOFF_WATCH_AT` is the percent, default 80. A value outside `(0, 100]` or an
+  unknown mode falls back to the default **and warns once** — a typo that silently
+  disables the watcher is the failure this exists to prevent.
+
+  Outside the TUI, `propose` degrades to `auto` rather than to silence. `-p`/JSON have no
+  dialog surface at all, and RPC has one that a host may never answer — the same hazard
+  that keeps `/handoff`'s editor review TUI-gated. A proposal nobody can answer loses the
+  note; writing it costs a file.
+- **Firing discipline:** at most once per crossing. Re-arms only once usage falls
+  `REARM_MARGIN_PERCENT` (10) below the threshold — i.e. after a compaction, not while
+  usage hovers at 79/81 across turns. Usage of `null` (between a compaction and the next
+  assistant response, when pi cannot yet price the context) holds the armed flag as-is
+  rather than treating unknown as low.
+- **Skips:** when `/handoff` already wrote a note this session (a mechanical note would
+  supersede a richer one as "newest pending" — same rule the shutdown digest follows);
+  when `getSessionFile()` is undefined (`--no-session`), reported as a warning since the
+  user asked for a note; when the branch holds no assistant message.
+- **Does not set `wroteNoteThisSession`.** The session usually keeps working after the
+  watcher fires, so the shutdown digest must still run at quit; its note is newer and the
+  reader supersedes the watcher's. Both being pending at once is the designed outcome,
+  not a leak.
+- **Note content:** the same mechanical `buildDigestNote`, with `trigger: "watch"` —
+  `source: watch` in frontmatter and a Context section that says the session was still
+  running. The shutdown wording ("written when the previous session exited") would be a
+  lie mid-session, and a stale note that reads as a current one is worse than no note.
+
+### Why the watcher cannot spawn the successor
+
+`newSession()` lives on `ExtensionCommandContext`; event handlers are handed the plain
+`ExtensionContext` (`runner.ts`: `createContext` vs `createCommandContext`). Nothing on
+`ExtensionAPI` reaches it either. So the watcher offers the spawn instead of performing
+it: the compose choice prefills `/handoff` into an empty editor, and `/handoff` — which
+has a command context — composes the richer note and runs the existing spawn confirm. An
+already-typed prompt is left alone; saving a keystroke is not worth clobbering the user's
+text. Closing this gap is the next backlog item's problem, and it likely needs an
+upstream change rather than a fork-local one.
+
+### Verified how
+
+`watcher.ts` keeps its pi imports type-only, so both halves are unit-tested:
+`test/watcher.test.ts` (config parsing, threshold/re-arm decisions) and
+`test/watcher-wiring.test.ts` (every mode end-to-end against a fake `pi`, asserting what
+reaches disk). Live smoke: `pi -p` with `PI_HANDOFF_WATCH_AT` set below 1% wrote a real
+`source: watch` note, reported it on stderr, and the shutdown digest still wrote its own
+note 1 ms later — the intended two-note outcome. The TUI select dialog itself is the one
+path with no live coverage (no tmux on the machine that built this); it is one
+`ctx.ui.select` call, covered by the wiring tests.
+
 ## Explicitly out of scope for v1 (v2 hooks noted)
 
-- Context-fullness watcher (`ctx.getContextUsage()` checked on `agent_settled`)
-  proposing or auto-running `/handoff`.
 - Autonomous successor spawning (the `kickoff` field is the contract it will consume).
 - Messaging integration (Slack/Telegram ping at decision points).
 - Repo-scoped event ledger (the dated-history `handoffs/` dir is its seed).
