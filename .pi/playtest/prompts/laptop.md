@@ -25,6 +25,16 @@ whole maneuver — never busy-loop.
   lip), `untilX` = stop at that x coordinate. The reply tells you events
   ("respawned" = you died and restarted; "jumped"; "won" = planet cleared), your
   x/y before, and the full state after.
+- Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
+  INSTANT your partner's cast lands, instead of a whole chat turn later:
+  `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":4000,"untilX":620}'`
+  `arm.on` = "freeze" (fires when the enemy is frozen) or "platform" (fires when
+  a new platform appears). You stand still while armed; the driver waits up to
+  90s (`arm.timeoutMs` to shorten), pauses ~0.2s (a human reaction), then runs
+  your exact move. Use `-m 120` on the curl — the wait is part of the call.
+  Extra reply fields: `armedForMs` (how long you stood waiting) and events
+  `arm-fired`, `arm-timeout` (no cast came — you never moved), or
+  `respawned-while-armed` (something killed you while you stood waiting).
 
 ## Movement technique (learn this before you move)
 
@@ -38,6 +48,11 @@ whole maneuver — never busy-loop.
 - To cross a gap: run at it with `jumpAtX` set just before the edge, then
   settle, check y, and take the next gap the same way. Random `hop` over a gap
   is how you fall in it.
+- To beat a short power window, don't wait for a chat confirmation — pre-commit:
+  tell your partner which power you need and that you're arming on it ("arming
+  my dash — cast Freeze Stars when ready"), then send the armed move. While
+  armed you are a stationary target, so arm from somewhere safe (near spawn, or
+  a spot no patrol reaches), never mid-corridor.
 - y ≈ 476 is standing on the main ground. `respawnCount` going up = a death;
   compare x before/after to learn where the danger was.
 - Screenshot (for the human's report — you can't see it):
@@ -72,11 +87,14 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
 3. Explore by moving right. You will die — that's data. Work out from `x`
    positions and `respawnCount` what killed you (patrolling enemy? a pit? you
    can't see, so infer and note how that feels).
-4. When blocked, ask your partner for a specific power BY NAME, e.g. "cast
-   Freeze Stars now, the enemy keeps killing me around x=400", then intercom_wait.
-   After they confirm, check `/state` (e.g. `enemyFrozen:true`) and MOVE — freeze
-   lasts ~3s, platforms ~5s. Ask them to re-cast if you were too slow; note every
-   re-cast, it's pacing data.
+4. When blocked, ask your partner for a specific power BY NAME and arm on it:
+   "arming my dash — cast Freeze Stars when ready, the enemy keeps killing me
+   around x=400", then send the armed move (it blocks until the cast lands —
+   freeze lasts ~3s, platforms ~5s, and arming is how you use a window that
+   short). If an armed move times out, or you want to feel the un-armed way,
+   intercom_wait for their confirm, check `/state`, and MOVE — the latency you
+   experience is pacing data. Ask for a re-cast when a window is wasted; note
+   every re-cast and every `arm-timeout` too.
 5. Iterate until `won:true`. Take a `/screenshot`. Tell your partner "cleared!",
    then swap one-line final impressions with them over intercom.
 
@@ -84,6 +102,10 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
 
 - Never read the game's source code and never touch files except your notes and
   report. Never call ports other than __LAPTOP_PORT__. Don't run the game yourself.
+- HONESTY for your report: an armed move is the driver firing YOUR pre-planned
+  move with a fixed ~0.2s reaction — pre-committed anticipation, not a live
+  read. Label progress that leaned on armed moves as such, and quote
+  `armedForMs` where it tells the story (how long you stood exposed waiting).
 - After each phase (boot/pairing, first deaths, each power, the clear), append
   1-3 observation lines: `echo "..." >> __DIR__/reports/__RUNID__-laptop-notes.md`
 - Budget: aim for under ~25 driver calls and under ~20 intercom messages total.

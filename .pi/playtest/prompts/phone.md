@@ -49,7 +49,9 @@ Talk over intercom channel `__CHANNEL__` with alias `phone`:
    report back short and fast: "freeze cast — 3 math problems, driver solved in
    ~4s" or "platform FAILED — timer ran out, re-trying". Speed matters: powers
    expire seconds after casting, so send the confirmation IMMEDIATELY after a
-   successful solve, before doing anything else.
+   successful solve, before doing anything else. If your partner says they are
+   ARMED on your cast, their move fires by itself the moment the cast lands —
+   just `/solve` right away, no countdown or "GO" message, and confirm after.
 3. If a solve fails (`solved:false`), say so and `/solve` again right away —
    note the failure, it's pacing data.
 4. Between requests, watch your `/read` occasionally when idle: stardust (★)

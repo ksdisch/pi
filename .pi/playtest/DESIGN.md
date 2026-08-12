@@ -47,7 +47,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
 | `POST /state` | Compact `getState()` snapshot |
-| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns before/after x/y, respawn delta, `won`, sfx events |
+| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns before/after x/y, respawn delta, `won`, sfx events. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
 
@@ -55,6 +55,24 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 command**. In co-op mode every cast must come from the phone solving a real
 puzzle, exactly like a human pair. (The bridge's `cast()` would silently bypass
 the partner — that's a solo-verification affordance, not a co-op one.)
+
+**Armed moves — the one latency affordance.** `/move` takes an optional
+`arm: {on: "freeze"|"platform", timeoutMs}`: the astronaut stands still until
+the trigger fires (`enemyFrozen` on; `platformCount` rising above its arm-time
+value), waits a fixed ~200ms human-reaction pause, then runs the pre-committed
+move. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
+pair invented the right "GO" protocol and still lost, because a ~3s freeze
+window cannot contain a ~12s+ LLM turn, so the harness was effectively
+playtesting with a reaction time no human has. Why it is still honest: it is
+the phone driver's honesty split applied to this seat — the LLM owns strategy
+(which maneuver, which trigger, when to arm, the intercom coordination), the
+driver owns mechanics and timing. The reaction pause is pinned in the driver,
+not caller-tunable, so an armed move models a human holding the key in
+anticipation, never a frame-perfect script. And it cannot wash out the harness's
+core finding: standing armed is standing still, so `respawned-while-armed`
+deaths are the clean measurement of "the game punishes waiting for your
+partner". Reports must label armed-move progress as driver-reflex, exactly like
+puzzle mechanics.
 
 ### Phone driver (`driver/phone.mjs`, port 4802)
 
@@ -151,9 +169,10 @@ started the server; a dev server you started by hand is left alone.
   There is no phone equivalent, because the two drivers guard different spans:
   the laptop's `try` wraps the whole boot, while the phone's wraps only
   browser/context/page creation, which by construction has no recording yet. A
-  `/join` that fails after that — a bad `PHONE_URL`, a relay that never answers
-  — throws with its page still live, so the footage is not lost: it lands in the
-  ordinary `phone.webm` at `/shutdown`. Watch that file, not a missing one.
+  `/join` that fails after that (a bad `PHONE_URL` throws; a relay that never
+  answers returns HTTP 200 with a `note`) leaves its page live either way, so
+  the footage is not lost: it lands in the ordinary `phone.webm` at `/shutdown`.
+  Watch that file, not a missing one.
 
 The claude session that ran the pilot synthesizes the two player reports into the
 final critique for Kyle; players only report their own seat's experience.
