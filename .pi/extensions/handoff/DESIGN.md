@@ -545,12 +545,15 @@ the predicate fires for `/handoff`-written notes — the deliberate cross-proces
 path — which is the right shape: retirement follows an intentional handoff, not a
 mid-session snapshot.
 
-- **Polling starts lazily:** only a session that ran `/handoff` is a candidate — the
-  command records the path it wrote, and an absent path is what gates the check off. A
-  ~30 s `setInterval`, `unref()`ed and torn down on `session_shutdown` — the intercom
-  watcher's discipline. The check is cheap by construction: knowing the note means
-  knowing where it lands when archived, so it is one `readFile` of one known path, no
-  directory scan at all.
+- **The timer is armed always; the check is what gates.** Every non-`off` session arms a
+  ~30 s `setInterval` at `session_start` — `unref()`ed and torn down on `session_shutdown`,
+  the intercom watcher's discipline — and each tick returns immediately unless `/handoff`
+  has recorded a note path. Arming lazily was the plan and is not implementable: the gate
+  opens mid-session when `/handoff` runs, and no event fires afterwards in the session
+  that most needs this (hand off, then sit idle while another window picks the note up).
+  A ticking no-op is the cost of not missing that case. When the gate is open the check
+  is one `readFile` of one known path — knowing the note means knowing where archiving
+  puts it — never a directory scan.
 - **Reported once per session.** The first consumed handoff stops the poll. A second
   `/handoff` in the same session therefore goes unwatched — a known gap (review F9,
   PR #18), not a design position: it costs one report in the rare
