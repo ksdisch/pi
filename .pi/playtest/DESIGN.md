@@ -148,8 +148,12 @@ started the server; a dev server you started by hand is left alone.
 - A laptop `/boot` that fails adds a third file to that directory,
   `laptop-boot-failed.webm`, so a boot that never reached the game is still
   watchable. Repeated failed boots overwrite it — it holds the latest failure.
-  There is no phone equivalent: a failed `/join` never gets as far as a page, so
-  it has no recording to save.
+  There is no phone equivalent, because the two drivers guard different spans:
+  the laptop's `try` wraps the whole boot, while the phone's wraps only
+  browser/context/page creation, which by construction has no recording yet. A
+  `/join` that fails after that — a bad `PHONE_URL`, a relay that never answers
+  — throws with its page still live, so the footage is not lost: it lands in the
+  ordinary `phone.webm` at `/shutdown`. Watch that file, not a missing one.
 
 The claude session that ran the pilot synthesizes the two player reports into the
 final critique for Kyle; players only report their own seat's experience.
