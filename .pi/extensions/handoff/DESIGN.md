@@ -419,8 +419,8 @@ reasons that hold up:
 it: the compose choice prefills `/handoff` into an empty editor, and `/handoff` — which
 has a command context — composes the richer note and runs the existing spawn confirm. An
 already-typed prompt is left alone; saving a keystroke is not worth clobbering the user's
-text. Closing this gap is the next backlog item's problem, and it likely needs an
-upstream change rather than a fork-local one.
+text. Closing this gap is designed in the "Session lifecycle" section below — the
+constraint turned out to be an exposure choice, not missing machinery.
 
 ### Verified how
 
@@ -437,16 +437,169 @@ Note that a threshold at or below `REARM_MARGIN_PERCENT` (10) — which the smok
 — can never re-arm, so the watcher fires exactly once for the life of that process. Fine for
 a smoke run, wrong as a setting; a warning for it is an open follow-up.
 
+## Session lifecycle — autonomous succession + retirement (added 2026-08-12)
+
+Status: **approved design, not yet built** · Build plan:
+`docs/build-plans/2026-08-12-session-lifecycle.md`
+
+Closes the gap the watcher section names — the watcher detects the stopping point but
+cannot act on it — and its inverse: a session whose work was picked up elsewhere sits in
+its terminal window forever. Two capabilities, designed together because they share
+signals (the `kickoff` field, the `consumed_by` stamp):
+
+1. **Succession** — `PI_HANDOFF_WATCH=spawn`: at the threshold crossing, write the note
+   *and* start the successor. No human confirm, all modes.
+2. **Retirement** — a session whose handoff note was consumed by another session shuts
+   itself down, and (by launch convention) its window closes with it.
+
+### Scope decisions (Kyle, 2026-08-12)
+
+1. Retirement = exit the pi process **and** close the Warp window. Session records in
+   `~/.pi/agent/sessions/` are never touched — they are what `ask_predecessor` reads.
+2. Succession = fork-local patch exposing `newSession` to event handlers, with the same
+   diff offered upstream; the patch retires if the PR lands.
+3. Window close = launch convention (`exec pi`), not AppleScript. An osascript helper
+   for hand-started windows is out of scope, named as a possible follow-up.
+4. Self-shutdown only. No session registry, no reaper; nothing ever signals another pid.
+5. Spawn-mode notes are LLM-composed with mechanical fallback.
+
+### The exposure patch
+
+The constraint documented above ("Why the watcher cannot spawn the successor") is
+narrower than BACKLOG item 1 assumed. `newSession` is not missing machinery: every mode
+binds a real handler into the runner — `interactive-mode.ts`, `print-mode.ts`, and
+`rpc-mode.ts` all pass `commandContextActions` with `newSession:
+runtimeHost.newSession` — and `createCommandContext()` merely grafts what the runner
+already holds (`runner.ts`, the `newSessionHandler` field) onto a context built by
+`createContext()`. The patch moves that one graft: `newSession` joins the plain
+`ExtensionContext`, next to `shutdown()`, which has lived there all along
+(`types.ts:340`) — existing precedent that per-mode-wired session actions belong on
+event contexts. `fork`/`switchSession`/`navigateTree`/`reload`/`waitForIdle` stay
+command-only; nothing needs them.
+
+Verified dead ends, recorded so nobody re-walks them: `pi.sendUserMessage` cannot reach
+a command context (it calls `prompt` with `expandPromptTemplates: false`, deliberately
+skipping command dispatch — `agent-session.ts`), and nothing on `ExtensionAPI`
+dispatches a registered command programmatically.
+
+Two upstream files change (`packages/coding-agent/src/core/extensions/runner.ts` and
+`types.ts`); both join the rebase-sensitive list in `CLAUDE.md`. The same diff goes
+upstream as a PR arguing the `shutdown()` precedent plus the autonomous-continuation
+use case; per-event contexts are created fresh per emit, so the existing staleness
+discipline already covers the new surface.
+
+### Succession: `PI_HANDOFF_WATCH=spawn`
+
+The watcher's mode table gains a row: `spawn` — everything `auto` does, then start the
+successor. The flow at a settle crossing:
+
+1. **Compose the note** via the `/handoff` composer (`compose.ts` is callable from the
+   event context — `modelRegistry` is on the plain `ExtensionContext`). On any error —
+   429, timeout — fall back to the mechanical digest note. A thin note plus
+   `ask_predecessor` beats no successor; the chain must survive free-tier throttling.
+2. **`ctx.newSession({ withSession })`** — in-process replacement: same window, same
+   process, no clutter created.
+3. **Inside `withSession`** (a `ReplacedSessionContext` — a full command context):
+   `sendUserMessage(kickoff)`. The reader queued the memo at `session_start
+   {reason:"new"}`, and the kickoff prompt is its delivery trigger, so briefing and
+   marching orders arrive in the same first turn. This is the `kickoff` contract from
+   locked decision 6 doing what it was stored for.
+
+**Spawn only from the settle path.** The `session_before_compact` crossing fires
+*inside* the agent run; replacing the session there is the stale-context footgun. That
+crossing writes the note and sets a `spawnPending` flag; the run's own settle — which
+always follows, `_emitAgentSettled` runs in the loop's `finally` — performs the spawn.
+
+**Skips:** everything the watcher already skips, plus `hasPendingMessages()` — queued
+follow-ups mean the session is not done. **Runaway guard:** a module-level generation
+counter (extension instances survive `newSession`) caps spawns per process — default
+10, `PI_HANDOFF_SPAWN_MAX` overrides, same parse-with-warn rules. At the cap, degrade
+to `auto` behavior plus a notice. Each spawn requires a genuine threshold crossing, so
+the counter is a backstop, not a governor.
+
+The shutdown digest is unaffected: `newSession` fires `session_shutdown` with
+`reason: "new"`, which Writer B already ignores.
+
+### Retirement: `retire.ts`, `PI_HANDOFF_RETIRE`
+
+The predicate for "this session's work was for-sure picked up": **an archived note
+with `session_id` equal to the current session's id, carrying a `consumed_by` stamp.**
+`superseded_by` deliberately does not qualify — superseded means a newer note won the
+briefing slot, not that this session's work was ingested.
+
+A consequence worth stating: watch notes cannot drive cross-process retirement. The
+reader's liveness guard makes sibling processes *skip* a live writer's watch note, so
+one can never be stamped `consumed_by` while its writer is alive to react. In practice
+the predicate fires for `/handoff`-written notes — the deliberate cross-process handoff
+path — which is the right shape: retirement follows an intentional handoff, not a
+mid-session snapshot.
+
+- **Polling starts lazily:** only a session that wrote a note this session is a
+  candidate. A ~30 s `setInterval`, `unref()`ed and torn down on `session_shutdown` —
+  the intercom watcher's discipline. The scan is cheap: note filenames embed the
+  writer's session-id fragment, so it is one readdir plus frontmatter parses of
+  own-session files only.
+- **Modes** (same env parse-with-warn machinery as the watcher):
+
+  | `PI_HANDOFF_RETIRE` | On predicate match |
+  |---|---|
+  | `off` | nothing |
+  | `notify` (default) | "handoff consumed by <id>; this session can retire" |
+  | `auto` | notify, 30 s grace, then `ctx.shutdown()` |
+
+- **`auto` re-checks at grace expiry:** `isIdle()`, `!hasPendingMessages()`, and no
+  session activity since the note was written. A session that kept working after
+  handing off has outgrown its note — killing it would eat real work — so it downgrades
+  to notify. `ctx.shutdown()` itself is graceful per-mode (the TUI's handler waits for
+  idle).
+- **Retirement suppresses the shutdown digest** (sets the same skip flag `/handoff`
+  uses). Without this, the retiring session's exit would drop a fresh pending note
+  re-advertising work that was already picked up — the next session would ingest its
+  own predecessor's ghost. The no-activity-since-note guard means the digest could not
+  contain anything the consumed note lacks.
+- In-process successors never match: the poll compares against the *current* session
+  id, and a replaced session has no actor left to retire.
+
+### Window close — the launch convention (not a pi component)
+
+pi can exit its process; the Warp window belongs to the shell. The convention:
+launchers start sessions with `exec pi …`, making pi the window's root process, so
+process exit ends the Warp session. That is a change to the `/launch` skill in
+`~/Projects/claude-config` plus a one-time verification of Warp's close-on-exit
+behavior — both build-plan items, neither in this repo. Hand-started windows degrade
+honestly: notice, exit, shell prompt survives. If that residue matters in practice,
+the osascript helper is the named follow-up.
+
+### Safety posture
+
+`spawn` and `auto` are both opt-in; the `notify` default is the dry-run period —
+nothing acts autonomously until both are explicitly set. A retiring session's intercom
+channels go silent with messages preserved on disk (matches intercom's known limits).
+Free-tier budget: one composer call per spawn against ~20/day, with the mechanical
+fallback keeping the chain alive when it throttles.
+
+### Verified how (planned)
+
+`retire.ts` keeps pi imports type-only: unit tests for config parsing and the
+predicate, wiring tests against the fake `pi` (the `watcher-wiring.test.ts` pattern).
+Spawn-mode wiring tests assert the settle-only rule, the generation cap, and the
+compose-fallback. Live smokes in a scratch dir (`-e` with an absolute path, never the
+repo cwd), Gemini free tier: the in-process chain end-to-end at a low threshold, and a
+two-process retirement (one session consumes, the writer notifies/retires). Flagged
+unknowns to verify during the build: whether `-p` print mode's process outlives a
+spawned successor's run, and Warp's close-on-exit behavior for `exec`-rooted sessions.
+
 ## Explicitly out of scope for v1 (v2 hooks noted)
 
-- Autonomous successor spawning (the `kickoff` field is the contract it will consume).
+- Autonomous successor spawning — **designed 2026-08-12**, see "Session lifecycle"
+  above (the `kickoff` field is the contract it consumes).
 - Messaging integration (Slack/Telegram ping at decision points).
 - Repo-scoped event ledger (the dated-history `handoffs/` dir is its seed).
 - Walk-up note detection from subdirectories; cross-cwd note routing.
 
 ---
 
-**Run-config note:** build this with a fresh session started from this file —
-recommended **Opus 5, effort high** (well-specified build, no open design
-questions): `claude --model claude-opus-5 --effort high`, opening prompt
-"Implement .pi/extensions/handoff/DESIGN.md, slice by slice."
+**Run-config note:** the v1 build this note originally launched has shipped. The
+one unbuilt section is "Session lifecycle"; its build has its own run-config note
+at the end of `docs/build-plans/2026-08-12-session-lifecycle.md` — launch from
+there, not from this file.

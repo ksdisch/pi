@@ -6,12 +6,15 @@ Groomed by `/backlog-hygiene`; see `docs/backlog-hygiene/` for decision briefs.
 
 ## Active (sequenced)
 
-1. **Autonomous successor spawning** — spawn without a human confirm, including
-   non-TUI modes (print/RPC). The `kickoff` note field (`notes.ts:38`,
-   `digest.ts:246`) is the contract. Stopping-point detection now exists
-   (`watcher.ts`), but `newSession()` is only on `ExtensionCommandContext`, so
-   an event handler cannot spawn — closing that likely needs an upstream change,
-   not a fork-local one. Start there.
+1. **Autonomous successor spawning + session retirement** — spawn without a
+   human confirm, including non-TUI modes (print/RPC), and let a session whose
+   handoff was consumed shut itself down (window closes via the exec-launch
+   convention). The `kickoff` note field (`notes.ts:38`, `digest.ts:246`) is the
+   contract. Design approved 2026-08-12: see the "Session lifecycle" section of
+   `.pi/extensions/handoff/DESIGN.md` and
+   `docs/build-plans/2026-08-12-session-lifecycle.md`. The `newSession()` gap
+   turned out to be exposure-only — fork patch + parallel upstream PR, not
+   upstream-first as this item previously guessed.
 2. **Slack/Telegram loop-in at decision points** — value materializes once
    sessions run unattended; sequence after item 1. Needs a design pass and
    external credentials.
