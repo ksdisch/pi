@@ -196,9 +196,18 @@ export interface WatcherDeps {
 	 * called directly: composing needs pi's runtime serializers, and this module's pi imports
 	 * stay type-only so both halves of it can be unit-tested.
 	 *
-	 * Absent, returning undefined, or throwing all mean the same thing — write the mechanical
-	 * note instead. A thin note plus `ask_predecessor` beats no successor at all, and the free
-	 * tier throttles often enough that this is a normal outcome, not an exceptional one.
+	 * All three outcomes fall back to the mechanical note — a thin note plus `ask_predecessor`
+	 * beats no successor, and the free tier throttles often enough that falling back is normal
+	 * rather than exceptional. What differs is how loudly:
+	 *
+	 * - **Absent** — nothing is said; nobody asked for composition.
+	 * - **Resolves undefined** — reported at info. Nothing to compose from (no model, empty
+	 *   branch); no provider was asked.
+	 * - **Throws** — reported as a warning, with the message. Use this for a provider refusal,
+	 *   the failure that actually happens here: the call sends a branch that is at the
+	 *   threshold by definition to the model whose window is that full. An implementation that
+	 *   swallows a refusal into `undefined` makes it invisible, which is the bug this split
+	 *   exists to prevent (review F2, PR #19).
 	 */
 	composeNote?: (ctx: ExtensionContext) => Promise<{ body: string; kickoff?: string } | undefined>;
 }
