@@ -411,16 +411,19 @@ reasons that hold up:
   running. The shutdown wording ("written when the previous session exited") would be a
   lie mid-session, and a stale note that reads as a current one is worse than no note.
 
-### Why the watcher cannot spawn the successor
+### Why the watcher could not spawn the successor — and now can
 
-`newSession()` lives on `ExtensionCommandContext`; event handlers are handed the plain
-`ExtensionContext` (`runner.ts`: `createContext` vs `createCommandContext`). Nothing on
-`ExtensionAPI` reaches it either. So the watcher offers the spawn instead of performing
-it: the compose choice prefills `/handoff` into an empty editor, and `/handoff` — which
-has a command context — composes the richer note and runs the existing spawn confirm. An
-already-typed prompt is left alone; saving a keystroke is not worth clobbering the user's
-text. Closing this gap is designed in the "Session lifecycle" section below — the
-constraint turned out to be an exposure choice, not missing machinery.
+`newSession()` used to live only on `ExtensionCommandContext`, while event handlers are
+handed the plain `ExtensionContext` (`runner.ts`: `createContext` vs
+`createCommandContext`), and nothing on `ExtensionAPI` reached it either. The constraint
+turned out to be an exposure choice rather than missing machinery, and the fork patch
+below moves the one graft; `PI_HANDOFF_WATCH=spawn` is the watcher acting on its own
+detection.
+
+`propose`'s compose choice still hands the job to `/handoff`, and that is still right for
+it: a user who is answering a dialog is asking to review the note, not to be replaced.
+It prefills `/handoff` into an empty editor only — saving a keystroke is not worth
+clobbering text the user already typed.
 
 ### Verified how
 
@@ -439,8 +442,10 @@ a smoke run, wrong as a setting; a warning for it is an open follow-up.
 
 ## Session lifecycle — autonomous succession + retirement (added 2026-08-12)
 
-Status: **approved design, not yet built** · Build plan:
-`docs/build-plans/2026-08-12-session-lifecycle.md`
+Status: **built 2026-08-12** — retirement in PR #18, the exposure patch and `spawn` mode
+in PR #19 · Build plan: `docs/build-plans/2026-08-12-session-lifecycle.md`. Where the
+build corrected the design, the correction is recorded inline below rather than left to
+the PR history.
 
 Closes the gap the watcher section names — the watcher detects the stopping point but
 cannot act on it — and its inverse: a session whose work was picked up elsewhere sits in
@@ -493,10 +498,19 @@ discipline already covers the new surface.
 The watcher's mode table gains a row: `spawn` — everything `auto` does, then start the
 successor. The flow at a settle crossing:
 
-1. **Compose the note** via the `/handoff` composer (`compose.ts` is callable from the
-   event context — `modelRegistry` is on the plain `ExtensionContext`). On any error —
-   429, timeout — fall back to the mechanical digest note. A thin note plus
-   `ask_predecessor` beats no successor; the chain must survive free-tier throttling.
+1. **Compose the note** via the `/handoff` composer. On any error — 429, timeout — fall
+   back to the mechanical digest note. A thin note plus `ask_predecessor` beats no
+   successor; the chain must survive free-tier throttling.
+
+   The design said `compose.ts` is callable from the event context because `modelRegistry`
+   is on the plain `ExtensionContext`, which is true and not sufficient: the *input* to the
+   composer is a serialized branch, and `serializeConversation`/`convertToLlm`/
+   `sessionEntryToContextMessages` are runtime pi imports. Pulling those into `watcher.ts`
+   would end its type-only discipline and with it its unit tests. So the composer is
+   injected — `index.ts` (the wiring module, already exempt) passes `composeNote` in
+   `WatcherDeps`, and the watcher treats absent, undefined, and throwing identically:
+   write the mechanical note. Composition is also skipped whenever the crossing could not
+   spawn anyway, so a refusal never costs a free-tier request.
 2. **`ctx.newSession({ withSession })`** — in-process replacement: same window, same
    process, no clutter created.
 3. **Inside `withSession`** (a `ReplacedSessionContext` — a full command context):
@@ -512,10 +526,19 @@ always follows, `_emitAgentSettled` runs in the loop's `finally` — performs th
 
 **Skips:** everything the watcher already skips, plus `hasPendingMessages()` — queued
 follow-ups mean the session is not done. **Runaway guard:** a module-level generation
-counter (extension instances survive `newSession`) caps spawns per process — default
-10, `PI_HANDOFF_SPAWN_MAX` overrides, same parse-with-warn rules. At the cap, degrade
-to `auto` behavior plus a notice. Each spawn requires a genuine threshold crossing, so
-the counter is a backstop, not a governor.
+counter caps spawns per process — default 10, `PI_HANDOFF_SPAWN_MAX` overrides, same
+parse-with-warn rules. At the cap, degrade to `auto` behavior plus a notice. Each spawn
+requires a genuine threshold crossing, so the counter is a backstop, not a governor.
+
+Module-level is load-bearing, and for the opposite reason the design gave. Extension
+*instances* do **not** survive `newSession`: every session replacement builds a new
+runtime with a new `DefaultResourceLoader`, which re-loads extensions and re-invokes the
+factory (`agent-session-runtime.ts` `teardownCurrent` → `createRuntime`;
+`agent-session-services.ts`; `extensions/loader.ts` — `await factory(api)` runs per load,
+only the module itself is cached). So every `let` inside `registerWatcher` resets on each
+spawn, and a per-instance counter would sit at 1 forever. What survives the chain is the
+module, which is exactly what the counter lives in. (Established while adjudicating
+review F2 on PR #18, which turned on the same mechanism.)
 
 The shutdown digest is unaffected: `newSession` fires `session_shutdown` with
 `reason: "new"`, which Writer B already ignores.

@@ -149,6 +149,31 @@ async function compose(
 	});
 }
 
+/**
+ * Compose a note body for the watcher's `spawn` mode, from a plain event context.
+ *
+ * No loader and no editor: this runs unattended, at a threshold crossing, for a successor
+ * that is about to be started. Returns undefined when there is nothing to compose from or the
+ * provider says no — the watcher's mechanical note is the fallback, and a thin note plus
+ * `ask_predecessor` beats no successor.
+ */
+async function composeForSpawn(ctx: ExtensionContext): Promise<{ body: string; kickoff?: string } | undefined> {
+	const model = ctx.model;
+	if (!model) return undefined;
+
+	const conversationText = serializeBranch(ctx.sessionManager.buildContextEntries());
+	if (!conversationText.trim()) return undefined;
+
+	const composed = await composeNoteBody({
+		modelRegistry: ctx.modelRegistry,
+		model,
+		conversationText,
+		goal: "",
+		sessionId: uuidv7(),
+	});
+	return composed.status === "ok" ? { body: composed.body, kickoff: composed.kickoff } : undefined;
+}
+
 function registerHandoffCommand(pi: ExtensionAPI, state: HandoffState): void {
 	pi.registerCommand("handoff", {
 		description: "Write a handoff note for the next session",
@@ -324,7 +349,12 @@ export default function (pi: ExtensionAPI) {
 	registerHandoffCommand(pi, state);
 	registerGhostTool(pi);
 	registerShutdownDigest(pi, state);
-	registerWatcher(pi, { handoffWritten: () => state.wroteNoteThisSession });
+	registerWatcher(pi, {
+		handoffWritten: () => state.wroteNoteThisSession,
+		// Injected rather than imported by the watcher: composing needs pi's runtime
+		// serializers, and watcher.ts keeps its pi imports type-only so it stays unit-testable.
+		composeNote: (ctx) => composeForSpawn(ctx),
+	});
 	registerRetire(pi, {
 		handoffNotePath: () => state.notePath,
 		// The same flag /handoff sets, for the same reason: the note that was already consumed
