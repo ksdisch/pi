@@ -33,8 +33,10 @@ whole maneuver — never busy-loop.
 - Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
   INSTANT your partner's cast lands, instead of a whole chat turn later:
   `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":3000}'`
-  `arm.on` = "freeze" (fires when the enemy is frozen) or "platform" (fires when
-  a new platform appears). You stand still while armed; the driver waits up to
+  `arm.on` = "freeze" (fires while the enemy is frozen) or "platform" (fires
+  while a platform is standing) — both fire on the CONDITION, not on the moment
+  it changes, so arming when your partner has already cast fires immediately
+  rather than waiting for a second cast. You stand still while armed; the driver waits up to
   90s (`arm.timeoutMs` to shorten), pauses ~0.2s (a human reaction), then runs
   your exact move. Use `-m 120` on the curl — the wait is part of the call.
   Extra reply fields: `armedForMs` (how long you stood waiting) and events
@@ -66,14 +68,16 @@ whole maneuver — never busy-loop.
   you while you were standing or running, so the hazard is right there at
   `diedAt.x`. A much larger `diedAt.y` means you were falling — you ran off an
   edge, and because you keep moving sideways as you fall, that edge is BEHIND
-  `diedAt.x` (a few hundred px back at running speed). `diedAt` can also lag the
+  `diedAt.x` — about 100-150px back, roughly half a second of falling at running
+  speed. `diedAt` can also lag the
   real moment by ~15px, so treat it as "about here", not a surveyed coordinate.
 - Screenshot (for the human's report — you can't see it):
   `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/screenshot -d '{"name":"sentry"}'`
 
 Key state fields: `x`/`y` (position; x grows rightward), `respawnCount` (deaths),
-`won`, `enemyFrozen`, `platformCount` (a summoned platform exists — they expire
-~5s after casting, so move IMMEDIATELY), `darkZonePresent` (a dark area that
+`won`, `enemyFrozen`, `platformCount` (a summoned platform is standing — it
+waits for you, but starts expiring (~5s) once you first touch it, so don't
+linger on it), `darkZonePresent` (a dark area that
 Illuminate lights up), `lastCastPower` (last power your partner cast).
 
 You CANNOT cast powers. Only your partner can, by solving a puzzle on the phone.
@@ -103,8 +107,9 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
 4. When blocked, ask your partner for a specific power BY NAME and arm on it:
    "arming my dash — cast Freeze Stars when ready, the enemy keeps killing me
    around x=400", then send the armed move (it blocks until the cast lands —
-   freeze lasts ~3s, platforms ~5s, and arming is how you use a window that
-   short). If an armed move times out, or you want to feel the un-armed way,
+   a freeze lasts only ~3s, and arming is how you use a window that short; a
+   platform stands and waits, so arming on it fires as soon as one is up, even
+   if your partner cast it before you asked). If an armed move times out, or you want to feel the un-armed way,
    intercom_wait for their confirm, check `/state`, and MOVE — the latency you
    experience is pacing data. Ask for a re-cast when a window is wasted; note
    every re-cast and every `arm-timeout` too.

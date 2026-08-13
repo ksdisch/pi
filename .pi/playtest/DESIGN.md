@@ -95,10 +95,17 @@ Two accuracy notes, stated so reports can carry them rather than discover them:
 `arm: {on: "freeze"|"platform", timeoutMs}` (`timeoutMs` only tightens the 90s
 ceiling, mirroring `maxMs` — a hold that outlived the caller's curl deadline
 would wedge the seat's serial command chain): the astronaut stands still until
-the trigger fires (`enemyFrozen` on; `platformCount` rising above the lowest
-count seen since arming — the game caps live platforms at one, so a fixed
-arm-time baseline could never fire after a re-arm), waits a fixed ~200ms
-human-reaction pause, then runs the pre-committed move. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
+the trigger fires, waits a fixed ~200ms human-reaction pause, then runs the
+pre-committed move. Both triggers read the **level**, not a rising edge:
+`enemyFrozen` is on, or a platform exists. A human who sees the enemy already
+frozen — or a bridge already standing over the pit — just goes. For the platform
+that is also the only rule the game still supports: since constellation
+`b7c308a` a summoned platform persists until it is touched and a re-cast while
+one is alive is a no-op, so an edge-triggered arm placed *after* a partner banked
+the platform (the flow that game change was built for) could never fire. It
+would hold the full 90s ceiling and then report `arm-timeout`, which the player
+prompt defines as "no cast came" — a driver manufacturing a coordination failure
+that never happened. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
 pair invented the right "GO" protocol and still lost, because a ~3s freeze
 window cannot contain a ~12s+ LLM turn, so the harness was effectively
 playtesting with a reaction time no human has. Why it is still honest: it is
@@ -117,7 +124,7 @@ puzzle mechanics.
 | Command | Does |
 |---|---|
 | `POST /join {code}` | Open phone.html, enter code, return spellbook summary |
-| `POST /read` | Which screen + visible text (phase, powers, stardust, errors), plus `world`: the laptop's state snapshot (see "The couch glance") |
+| `POST /read` | Which screen + visible text (phase, powers, stardust, errors), plus `world` (the laptop's state snapshot) and `worldLastDeath` (where the partner last died) — see "The couch glance" |
 | `POST /solve {power}` | Tap the power, run the whole puzzle in-page, return a transcript (problems seen, answers given, tap sequence observed, duration, retries) |
 | `POST /screenshot` / `POST /shutdown` | as above |
 
@@ -133,9 +140,19 @@ the demo flashes and repeated. The report must label driver-mechanics as such.
 
 **The couch glance (`/read` → `world`).** `/read` returns, alongside the phone
 screen, the laptop driver's own `/state` snapshot — position, `respawnCount`,
-`enemyFrozen`, `platformCount`, `darkZonePresent`, `lastCastPower`. The phone
-driver fetches it from the laptop driver's command port (derived identically, so
-it can only ever reach this checkout's partner).
+`enemyFrozen`, `platformCount`, `darkZonePresent`, `lastCastPower` — and
+`worldLastDeath`, the laptop driver's last captured `diedAt`. The phone driver
+fetches both from the laptop driver's command port, whose `harnessDir` it
+verifies first, so a glance can only ever read this checkout's game.
+
+`worldLastDeath` is not decoration: the complaint this feature answers is
+specifically "I could not tell whether my partner died to the sentry, the pit,
+or something else", and a live snapshot cannot answer it — after a death,
+`world.x`/`world.y` is the **respawn point**, the exact artefact `diedAt` exists
+to defeat. The two travel as separate fields so neither seat can mistake one for
+the other, and the phone prompt carries the same warning the laptop prompt does.
+A human on the couch watches the death happen, so carrying it is the more
+faithful glance, not a more generous one.
 
 Why the harness owes the phone seat this: the premise is two people on one
 couch, and a co-located human looks up and sees the platformer. Headless drivers
@@ -224,13 +241,20 @@ Two changes, because either alone leaves a hole:
   phone port. Both drivers, `run-pilot.sh` and `verify-rails.sh` read their
   defaults from that one module, so no side recomputes the derivation. Two
   checkouts now cannot find each other at all.
-- **An ownership check on shutdown** — `/health` reports `harnessDir`, and
-  `stop_drivers` refuses to shut down a driver that answers with a different
-  one, printing what it refused. This is what covers the residual cases the
-  derivation can't: an explicit `LAPTOP_DRIVER_PORT=` override that collides, or
-  the ~1/2000 hash collision between two checkouts. A port that answers nothing,
-  or answers without a `harnessDir`, is likewise left alone — the pid files
-  still reap the drivers this run started.
+- **Ownership checks on both sides of the port** — `/health` reports
+  `harnessDir`, and nothing in the harness kills *or drives* a driver that
+  answers with a different one. `stop_drivers` refuses the shutdown and prints
+  what it refused; `run-pilot.sh`'s post-spawn health gate requires a matching
+  `harnessDir` rather than any HTTP 200, and aborts the run otherwise;
+  `verify-rails.sh` asserts the same before its first command; the phone's world
+  glance verifies it before it will return a `world`. Refusing to kill a foreign
+  driver is not the same as refusing to play through one — our own driver dies
+  on bind (`EADDRINUSE`, into a log nobody reads) and the foreign one would then
+  satisfy a bare health check for it, so both halves are needed. Together they
+  cover what the derivation can't: an explicit `LAPTOP_DRIVER_PORT=` override
+  that collides, or the ~1/2000 hash collision between two checkouts. A port
+  that answers nothing, or answers without a `harnessDir`, is left alone — the
+  pid files still reap the drivers this run started.
 
 `LAPTOP_DRIVER_PORT`/`PHONE_DRIVER_PORT` still win when set, and still move
 every side together.

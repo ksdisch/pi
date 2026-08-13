@@ -16,10 +16,17 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   The reply also carries `world`: what you'd see by glancing up at the laptop
   screen beside you — your partner's `x`/`y`, `respawnCount` (their deaths),
   `enemyFrozen`, `platformCount`, `darkZonePresent`, `lastCastPower`. Use it to
-  decide and to check your own casts: did the freeze actually land, is a platform
-  still alive, did they get past the spot that keeps killing them. If the laptop
-  isn't reachable yet, `world` is null and `worldNote` says why — that's not an
-  error, just no glance available.
+  check your own casts: did the freeze actually land, is a platform standing, is
+  your partner making ground.
+  IMPORTANT — `world.x`/`world.y` right after `respawnCount` goes up is where
+  the game PUT THEM BACK (near x=80), NOT where they died. Never tell your
+  partner they are "dying near x=84". The death site is the separate
+  `worldLastDeath` field: `{x, y}` plus the `respawnCount` it belongs to, so you
+  can tell a death that just happened from an older one. `worldLastDeath.y`
+  around 476 means something on the ground got them; much larger means they
+  fell. If it's null, nobody has died yet this session.
+  If the laptop isn't reachable yet, `world` is null and `worldNote` says why —
+  that's not an error, just no glance available.
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns
   a transcript of what it saw and did):
   `curl -s -m 60 -X POST http://127.0.0.1:__PHONE_PORT__/solve -d '{"power":"freeze-stars"}'`

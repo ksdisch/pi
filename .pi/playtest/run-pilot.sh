@@ -52,6 +52,30 @@ wait_http() { # url [timeout_s]
 	done
 }
 
+# Wait for a driver of THIS checkout on `url`. HTTP 200 is not enough: if another
+# checkout's driver already holds the port, ours dies on bind (common.mjs exits
+# on EADDRINUSE, into a log nobody reads) and the foreign driver answers the
+# health check in its place — the run would then boot both player sessions
+# against that checkout's game and play it to completion looking healthy. That is
+# the pilot-3 corruption with the roles swapped, so this is fatal, not a warning.
+wait_owned_driver() { # url [timeout_s]
+	local url="$1" deadline=$((SECONDS + ${2:-30})) owner=""
+	until
+		owner="$(curl -sf -m 2 "$url/health" 2>/dev/null | sed -n 's/.*"harnessDir":"\([^"]*\)".*/\1/p' || true)"
+		[[ $owner == "$HARNESS_ID" ]]
+	do
+		if ((SECONDS >= deadline)); then
+			if [[ -n $owner ]]; then
+				echo "ERROR: $url is served by a driver from $owner, not $HARNESS_ID — refusing to run against another checkout's game" >&2
+			else
+				echo "ERROR: timed out waiting for this checkout's driver on $url" >&2
+			fi
+			return 1
+		fi
+		sleep 1
+	done
+}
+
 # Kill a recorded pid and, since `set -m` gave it its own group, everything it
 # spawned. The group kill is what reaches npm's vite/relay children and pi's.
 stop_pidfile() {
@@ -186,8 +210,8 @@ stop_drivers
 spawn_service "$DIR/logs/laptop-driver.pid" "$DIR/logs/laptop-driver.log" node "$DIR/driver/laptop.mjs"
 spawn_service "$DIR/logs/phone-driver.pid" "$DIR/logs/phone-driver.log" node "$DIR/driver/phone.mjs"
 CLEANUP_DRIVERS=1
-wait_http "$L/health" 30
-wait_http "$P/health" 30
+wait_owned_driver "$L" 30
+wait_owned_driver "$P" 30
 echo "drivers up (laptop :$LAPTOP_DRIVER_PORT, phone :$PHONE_DRIVER_PORT)"
 # `if`, not `[[ … ]] && echo`: the latter exits non-zero when HEADED is unset and
 # `set -e` would kill the script right here (same trap F2 caught in the preflight).

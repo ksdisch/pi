@@ -14,6 +14,20 @@ eval "$PORT_ENV"
 L="http://127.0.0.1:${LAPTOP_DRIVER_PORT:-$PI_PLAYTEST_LAPTOP_PORT}"
 P="http://127.0.0.1:${PHONE_DRIVER_PORT:-$PI_PLAYTEST_PHONE_PORT}"
 
+# Never drive a driver this checkout does not own: a neighbouring checkout's
+# drivers answering on these ports would run this whole script against their
+# game, which is how pilot 3 produced a phantom clear.
+assert_owned() { # url
+	local owner
+	owner="$(curl -sf -m 3 "$1/health" 2>/dev/null | sed -n 's/.*"harnessDir":"\([^"]*\)".*/\1/p' || true)"
+	[[ $owner == "$PI_PLAYTEST_HARNESS_DIR" ]] && return 0
+	echo "ERROR: $1 is not this checkout's driver (harnessDir=${owner:-none}, expected $PI_PLAYTEST_HARNESS_DIR)" >&2
+	echo "Start this checkout's drivers with ./run-pilot.sh drivers first." >&2
+	exit 1
+}
+assert_owned "$L"
+assert_owned "$P"
+
 move() { curl -s -m 40 -X POST $L/move -d "$1"; }
 solve() { curl -s -m 60 -X POST $P/solve -d "{\"power\":\"$1\"}"; }
 pp() { python3 -c 'import sys,json;d=json.load(sys.stdin);s=d.get("state",{});print(d.get("events"),"x",s.get("x"),"y",s.get("y"),"resp",s.get("respawnCount"),"won",s.get("won"))'; }
@@ -66,11 +80,13 @@ move '{"dir":"left","ms":2500,"untilX":150}' >/dev/null
 # full traverse. The driver's floor tracking stays as it is — a platform that IS
 # crossed still expires and lowers the count mid-run.
 #
-# FOLLOW-UP (driver semantics, not a rails failure): under the new lifetime
-# rule, arming on "platform" while one is already alive now waits out the whole
-# timeout instead of firing, where the freeze trigger deliberately fires on the
-# level ("a human who sees the enemy already frozen just goes"). A human who
-# sees a bridge already in place would just go too.
+# The driver's platform trigger now reads the LEVEL (a platform exists) rather
+# than a rising edge, for the same reason the freeze trigger always has: a human
+# who sees a bridge already standing just goes. Edge-triggering could not survive
+# the new lifetime rule anyway — a seat arming after its partner banked the
+# platform would wait out the whole timeout on an edge that can never come. This
+# check therefore starts with no platform alive, so it still exercises a real
+# 0 -> 1 arrival rather than an instant fire.
 armed_out=$(mktemp)
 curl -s -m 60 -X POST $L/move -d '{"arm":{"on":"platform","timeoutMs":30000},"dir":"none","ms":300}' >"$armed_out" &
 armed_pid=$!

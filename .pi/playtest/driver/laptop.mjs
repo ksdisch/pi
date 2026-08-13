@@ -34,6 +34,13 @@ const ARM_REACTION_MS = 200;
 
 let browser = null;
 let page = null;
+/**
+ * Where the astronaut last died, carried on the driver so a caller who did not
+ * issue the move can still see it — the phone's world glance is exactly that
+ * caller, and "what killed my partner" is the question the glance exists to
+ * answer. `/move` sets it from the same capture that fills its own `diedAt`.
+ */
+let lastDeath = null;
 let roomCode = null;
 let phoneJoined = false;
 let booted = false;
@@ -130,7 +137,11 @@ const routes = {
 		return { state: await snapshot() };
 	},
 
-	"/state": async () => ({ state: await snapshot() }),
+	// `lastDeath` rides along so a glance from the phone can answer "what killed
+	// them" — the live `x`/`y` in `state` is the RESPAWN point after a death, and
+	// a seat reading that as a death site is the misattribution `diedAt` exists to
+	// end. Null until the first death of the session.
+	"/state": async () => ({ state: await snapshot(), lastDeath }),
 
 	/**
 	 * One maneuver as a single in-page loop — all timing runs in the browser, so
@@ -141,8 +152,7 @@ const routes = {
 	 *
 	 * `arm` pre-commits the whole maneuver on a partner's cast: the astronaut
 	 * stands still until the trigger fires — "freeze" = enemyFrozen is on,
-	 * "platform" = platformCount rises above the lowest count seen since
-	 * arming — then waits one
+	 * "platform" = a platform exists — then waits one
 	 * human reaction (ARM_REACTION_MS) and runs the move. The wait aborts without
 	 * moving on death, win, or arm.timeoutMs; an armed player is still a
 	 * stationary target, and that exposure is playtest data, not a bug.
@@ -197,19 +207,22 @@ const routes = {
 				// the closest thing to "where it died" that a poll loop can see.
 				let lastSeen = before;
 				if (opts.arm) {
-					// "freeze" fires on the level (a human who sees the enemy already
-					// frozen just goes). "platform" fires on the count rising above the
-					// LOWEST count seen since arming, not a fixed arm-time baseline: the
-					// game caps live platforms at one, so a fixed baseline of 1 could
-					// never fire again — expiry drops the count to 0 and a fresh cast
-					// only returns it to 1. The floor tracks the expiry down.
-					let floorPlatforms = start.platformCount;
+					// Both triggers fire on the LEVEL, not on a rising edge: a human who
+					// sees the enemy already frozen — or a bridge already standing over the
+					// pit — just goes. For "platform" that is also the only workable rule
+					// since the game made a summoned platform persist until it is touched
+					// (constellation b7c308a): a re-cast while one is alive is a no-op, so a
+					// seat arming after its partner banked the platform (the flow that game
+					// change was built for) would wait out the whole 90s ceiling on an edge
+					// that can never come, and then report `arm-timeout` — which the player
+					// prompt defines as "no cast came". A driver that manufactures a
+					// coordination failure is the exact defect class this harness is for.
 					const ta = performance.now();
 					for (;;) {
 						await pause(60);
 						const s = b.getState();
 						const t = performance.now() - ta;
-						const fired = opts.arm.on === "freeze" ? s.enemyFrozen : s.platformCount > floorPlatforms;
+						const fired = opts.arm.on === "freeze" ? s.enemyFrozen : s.platformCount > 0;
 						if (fired) {
 							events.push("arm-fired");
 							armedForMs = Math.round(t);
@@ -236,7 +249,6 @@ const routes = {
 								diedAt: died ? lastSeen : null,
 							};
 						}
-						floorPlatforms = Math.min(floorPlatforms, s.platformCount);
 						lastSeen = at(s);
 					}
 				}
@@ -315,7 +327,13 @@ const routes = {
 		// Only on a death: `state` is post-respawn truth, `diedAt` is where the
 		// astronaut actually was. Omitted entirely when nothing died, so its
 		// presence is the signal and no stale field can be misread as one.
-		if (result.diedAt) reply.diedAt = result.diedAt;
+		if (result.diedAt) {
+			reply.diedAt = result.diedAt;
+			// Kept for /state, where the age matters: a glance arriving much later
+			// must be able to tell "just now" from "ten deaths ago", so the death's
+			// own respawn count and wall-clock time travel with the position.
+			lastDeath = { ...result.diedAt, respawnCount: result.after.respawnCount, atIso: new Date().toISOString() };
+		}
 		if (armOpts) reply.armedForMs = result.armedForMs;
 		return reply;
 	},

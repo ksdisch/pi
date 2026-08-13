@@ -68,14 +68,36 @@ const readScreen = () =>
  * reply, never fail the `/read` the seat actually asked for. The laptop's
  * `/state` runs off its serial chain (common.mjs), so a partner mid-maneuver —
  * exactly when a glance is worth taking — still answers immediately.
+ *
+ * Ownership is checked before the first glance and never assumed: reading a
+ * neighbouring checkout's game is how pilot 3 produced a phantom clear, and a
+ * glance is a read channel into whatever process holds that port.
  */
+let laptopOwner = null; // harnessDir the driver on LAPTOP_URL reported, once it answered
+
 async function glanceAtLaptop() {
 	try {
+		if (laptopOwner === null) {
+			const health = await fetch(`${LAPTOP_URL}/health`, { signal: AbortSignal.timeout(2_000) });
+			// Only a real answer settles it — a driver that has not started yet
+			// leaves this unchecked so a later glance can still succeed.
+			laptopOwner = (await health.json().catch(() => null))?.harnessDir ?? null;
+		}
+		if (laptopOwner === null) return { world: null, worldNote: "no glance — the laptop driver did not answer /health" };
+		if (laptopOwner !== HARNESS_DIR) {
+			return {
+				world: null,
+				worldNote: `refusing to glance — the driver on ${LAPTOP_URL} belongs to ${laptopOwner}, not this harness`,
+			};
+		}
 		const res = await fetch(`${LAPTOP_URL}/state`, { method: "POST", signal: AbortSignal.timeout(2_000) });
 		const body = await res.json().catch(() => null);
 		if (!res.ok) return { world: null, worldNote: `laptop driver: ${body?.error ?? `HTTP ${res.status}`}` };
 		if (!body?.state) return { world: null, worldNote: "laptop driver answered without a state snapshot" };
-		return { world: body.state };
+		// `lastDeath` is where the partner actually died; `world.x`/`world.y` is
+		// where the game put them back. Kept as separate fields so the two can
+		// never be confused for one another.
+		return { world: body.state, worldLastDeath: body.lastDeath ?? null };
 	} catch (err) {
 		return { world: null, worldNote: `no glance at the laptop — ${String(err instanceof Error ? err.message : err)}` };
 	}
