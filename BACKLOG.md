@@ -16,29 +16,37 @@ for decision briefs.
    the dated `.pi/handoffs/` history.
 3. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
-4. **Playtest driver `diedAt` capture** — capture x/y at the moment
-   `respawnCount` increments and return it as `diedAt`, leaving `state` as
-   post-respawn truth. Pilot 3's highest-value recommendation: the
-   misattribution distorted reasoning in all three pilots. Picked 2026-08-13
-   (Arc A, in flight). See `.pi/playtest/PILOT-2026-08-12.md`.
-5. **Playtest driver port isolation** — derive default ports from the harness
-   path instead of hardcoded 4801/4802; `stop_drivers` refuses drivers whose
-   `/health` reports a different `HARNESS_DIR`. Two checkouts silently
-   corrupted each other in pilot 3 run 2. Picked 2026-08-13 (Arc A, in
-   flight).
-6. **Phone-seat visibility (driver-side only)** — three phone seats across
-   three pilots reported being blind to world state; partly game-side, scope
-   carefully. Stretch item on Arc A.
-7. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
+4. **Playtest harness review follow-ups** — four nice-to-haves from PR #21's
+   adversarial review, none blocking: mid-boot `/state` should guard on
+   `booted` rather than `page` so a glance reports "laptop not ready" instead
+   of a raw TypeError (F5); the derived port range's rationale holds on macOS
+   but sits inside Linux's default ephemeral range (F6); `lastDeath` survives a
+   `/planet` re-entry that resets `respawnCount`, inverting the freshness rule
+   the phone prompt teaches — clear it, and point the seat at `atIso` (F9); the
+   glance's documented 2s bound is ~4s on the first `/read` (F10).
+5. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
    killed a seat mid-run (pilot 3, finding 6); candidate change to
    `packages/ai/src/utils/retry.ts`. Grows the rebase-sensitive surface;
    consider upstreaming instead.
-8. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+6. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
 
 ## Shipped
 
+- **Trustworthy playtest telemetry** (2026-08-13, PR #21) — Arc A, all three
+  items including the stretch. `diedAt` on a `/move` death reports where the
+  astronaut actually was instead of where it respawned (measured: a sentry death
+  at `{496, 476}` and a pit death at `{776, 600}`, both against a `state.x` of
+  ~84), retiring a misattribution that distorted all three pilots. Driver ports
+  derive from the harness path (`driver/ports.mjs`), `/health` reports
+  `harnessDir`, and nothing kills *or drives* a driver belonging to another
+  checkout — the corruption that voided pilot 3 run 2. The phone's `/read` gained
+  the couch glance (`world` + `worldLastDeath`), fixing a blindness three phone
+  seats reported that was the harness's, not the game's. Review also caught the
+  armed `platform` trigger going dead against constellation `b7c308a` (fixed:
+  level-triggered like freeze). See `.pi/playtest/DESIGN.md` and
+  `.pi/playtest/PILOT-2026-08-12.md`.
 - **Autonomous successor spawning + session retirement** (2026-08-12, PRs #18/#19)
   — `PI_HANDOFF_WATCH=spawn` writes the note and starts the successor itself, in
   every mode including `-p`; `PI_HANDOFF_RETIRE` lets a session whose handoff was
