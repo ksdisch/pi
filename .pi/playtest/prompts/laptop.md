@@ -76,8 +76,9 @@ whole maneuver — never busy-loop.
 
 Key state fields: `x`/`y` (position; x grows rightward), `respawnCount` (deaths),
 `won`, `enemyFrozen`, `platformCount` (a summoned platform is standing — it
-waits for you, but starts expiring (~5s) once you first touch it, so don't
-linger on it), `darkZonePresent` (a dark area that
+waits indefinitely until you LAND on it, then starts a ~5s countdown, so brushing
+past it or bonking its underside costs you nothing but standing on it does),
+`darkZonePresent` (a dark area that
 Illuminate lights up), `lastCastPower` (last power your partner cast).
 
 You CANNOT cast powers. Only your partner can, by solving a puzzle on the phone.
@@ -109,7 +110,10 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
    around x=400", then send the armed move (it blocks until the cast lands —
    a freeze lasts only ~3s, and arming is how you use a window that short; a
    platform stands and waits, so arming on it fires as soon as one is up, even
-   if your partner cast it before you asked). If an armed move times out, or you want to feel the un-armed way,
+   if your partner cast it before you asked). If a platform you already landed
+   on is counting down and you are not across yet, asking for another cast of
+   the same power refreshes it back to waiting — that is a real option, not a
+   wasted cast. If an armed move times out, or you want to feel the un-armed way,
    intercom_wait for their confirm, check `/state`, and MOVE — the latency you
    experience is pacing data. Ask for a re-cast when a window is wasted; note
    every re-cast and every `arm-timeout` too.

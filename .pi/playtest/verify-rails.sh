@@ -72,21 +72,22 @@ move '{"dir":"left","ms":2500,"untilX":150}' >/dev/null
 # the stationary arm at ~150 never touches it, and no patrol reaches it.
 #
 # This block used to test a harder shape — arm while a platform was ALIVE, let
-# it expire, re-cast, and watch the edge fire from the lowered floor (a fixed
+# it expire, re-cast, and watch the edge fire from a lowered floor (a fixed
 # arm-time baseline fails exactly that). Constellation b7c308a ("summoned
-# platform arms on arrival, not on drop") made that sequence unreachable: a
-# platform now lives until the astronaut touches it, and a re-cast while one is
-# alive is a deliberate no-op, so the count cannot fall and rise again without a
-# full traverse. The driver's floor tracking stays as it is — a platform that IS
-# crossed still expires and lowers the count mid-run.
+# platform arms on arrival, not on drop"), refined by d4f5a3c, made that
+# sequence unreachable: a platform now waits indefinitely until the astronaut
+# LANDS on it, and a re-cast onto one that is still waiting is banner-only, so
+# the count cannot fall and rise again without a full traverse. (A platform that
+# IS landed on still counts down and lowers the count — and a re-cast onto that
+# one refreshes it back to waiting.)
 #
-# The driver's platform trigger now reads the LEVEL (a platform exists) rather
-# than a rising edge, for the same reason the freeze trigger always has: a human
-# who sees a bridge already standing just goes. Edge-triggering could not survive
-# the new lifetime rule anyway — a seat arming after its partner banked the
-# platform would wait out the whole timeout on an edge that can never come. This
-# check therefore starts with no platform alive, so it still exercises a real
-# 0 -> 1 arrival rather than an instant fire.
+# The driver's platform trigger therefore reads the LEVEL (a platform exists)
+# rather than a rising edge, for the same reason the freeze trigger always has: a
+# human who sees a bridge already standing just goes. Edge-triggering could not
+# survive the new lifetime rule anyway — a seat arming after its partner banked
+# the platform would wait out the whole timeout on an edge that can never come.
+# This check therefore starts with no platform alive, so it still exercises a
+# real 0 -> 1 arrival rather than an instant fire.
 armed_out=$(mktemp)
 curl -s -m 60 -X POST $L/move -d '{"arm":{"on":"platform","timeoutMs":30000},"dir":"none","ms":300}' >"$armed_out" &
 armed_pid=$!
@@ -107,7 +108,7 @@ for attempt in 1 2 3 4 5 6; do
 	echo "$mv" | grep -q reached-x || continue
 
 	# Make sure a platform is in place over the 640-864 void (it drops at 770 and
-	# now waits there until stepped on, so this cast is a no-op when the check
+	# now waits there until landed on, so this cast is banner-only when the check
 	# above already dropped one), then leap onto it from the lip.
 	solve summon-platform | python3 -c 'import sys,json;d=json.load(sys.stdin);print("  platform:",d["solved"],"in",d["elapsedMs"],"ms")'
 	mv=$(move '{"dir":"right","ms":2000,"jumpAtX":628,"untilX":780}')

@@ -100,8 +100,10 @@ pre-committed move. Both triggers read the **level**, not a rising edge:
 `enemyFrozen` is on, or a platform exists. A human who sees the enemy already
 frozen — or a bridge already standing over the pit — just goes. For the platform
 that is also the only rule the game still supports: since constellation
-`b7c308a` a summoned platform persists until it is touched and a re-cast while
-one is alive is a no-op, so an edge-triggered arm placed *after* a partner banked
+`b7c308a` (refined by `d4f5a3c`) a summoned platform waits indefinitely until the
+astronaut *lands* on it — a side clip or an underside bonk does not start the
+countdown — and a re-cast onto one that is still waiting is banner-only, so an
+edge-triggered arm placed *after* a partner banked
 the platform (the flow that game change was built for) could never fire. It
 would hold the full 90s ceiling and then report `arm-timeout`, which the player
 prompt defines as "no cast came" — a driver manufacturing a coordination failure

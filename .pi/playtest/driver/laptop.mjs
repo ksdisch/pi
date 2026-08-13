@@ -210,13 +210,14 @@ const routes = {
 					// Both triggers fire on the LEVEL, not on a rising edge: a human who
 					// sees the enemy already frozen — or a bridge already standing over the
 					// pit — just goes. For "platform" that is also the only workable rule
-					// since the game made a summoned platform persist until it is touched
-					// (constellation b7c308a): a re-cast while one is alive is a no-op, so a
-					// seat arming after its partner banked the platform (the flow that game
-					// change was built for) would wait out the whole 90s ceiling on an edge
-					// that can never come, and then report `arm-timeout` — which the player
-					// prompt defines as "no cast came". A driver that manufactures a
-					// coordination failure is the exact defect class this harness is for.
+					// since the game made a summoned platform wait indefinitely until the
+					// astronaut lands on it (constellation b7c308a, refined by d4f5a3c): a
+					// re-cast onto an unarmed platform is banner-only, so a seat arming
+					// after its partner banked the platform (the flow that game change was
+					// built for) would wait out the whole 90s ceiling on an edge that can
+					// never come, and then report `arm-timeout` — which the player prompt
+					// defines as "no cast came". A driver that manufactures a coordination
+					// failure is the exact defect class this harness is for.
 					const ta = performance.now();
 					for (;;) {
 						await pause(60);
