@@ -79,7 +79,9 @@ move '{"dir":"left","ms":2500,"untilX":150}' >/dev/null
 # LANDS on it, and a re-cast onto one that is still waiting is banner-only, so
 # the count cannot fall and rise again without a full traverse. (A platform that
 # IS landed on still counts down and lowers the count — and a re-cast onto that
-# one refreshes it back to waiting.)
+# one restarts it: a fresh lifetime while the astronaut stands on it, since the
+# collider re-arms it the next frame, or the indefinite wait back once it has
+# fallen off.)
 #
 # The driver's platform trigger therefore reads the LEVEL (a platform exists)
 # rather than a rising edge, for the same reason the freeze trigger always has: a

@@ -110,10 +110,14 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
    around x=400", then send the armed move (it blocks until the cast lands —
    a freeze lasts only ~3s, and arming is how you use a window that short; a
    platform stands and waits, so arming on it fires as soon as one is up, even
-   if your partner cast it before you asked). If a platform you already landed
-   on is counting down and you are not across yet, asking for another cast of
-   the same power refreshes it back to waiting — that is a real option, not a
-   wasted cast. If an armed move times out, or you want to feel the un-armed way,
+   if your partner cast it before you asked). A platform you already landed on
+   is counting down (~5s), and another cast of the same power restarts it — a
+   fresh ~5s if you are still standing on it, or the indefinite wait back if you
+   have fallen off. Don't plan around that: your partner needs ~5s just to solve
+   the puzzle, plus however long the message takes to reach them, so a refresh
+   almost never lands inside the countdown you are trying to beat. Treat the
+   bridge as something to cross now and the re-cast as what you fall back on
+   after you lose it. If an armed move times out, or you want to feel the un-armed way,
    intercom_wait for their confirm, check `/state`, and MOVE — the latency you
    experience is pacing data. Ask for a re-cast when a window is wasted; note
    every re-cast and every `arm-timeout` too.
