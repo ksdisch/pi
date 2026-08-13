@@ -1,8 +1,10 @@
 # Fork Backlog (ksdisch/pi)
 
-Fork-only work items. Upstream issues live in earendil-works/pi; Constellation
-playtest work is tracked in `.pi/playtest/` and owned by its own sessions.
-Groomed by `/backlog-hygiene`; see `docs/backlog-hygiene/` for decision briefs.
+Fork-only work items. Upstream issues live in earendil-works/pi. Playtest
+*harness* items are tracked here as of 2026-08-13 (previously owned by their
+own sessions); game-side Constellation findings still route to the
+constellation repo. Groomed by `/backlog-hygiene`; see `docs/backlog-hygiene/`
+for decision briefs.
 
 ## Active (sequenced)
 
@@ -14,6 +16,26 @@ Groomed by `/backlog-hygiene`; see `docs/backlog-hygiene/` for decision briefs.
    the dated `.pi/handoffs/` history.
 3. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
+4. **Playtest driver `diedAt` capture** — capture x/y at the moment
+   `respawnCount` increments and return it as `diedAt`, leaving `state` as
+   post-respawn truth. Pilot 3's highest-value recommendation: the
+   misattribution distorted reasoning in all three pilots. Picked 2026-08-13
+   (Arc A, in flight). See `.pi/playtest/PILOT-2026-08-12.md`.
+5. **Playtest driver port isolation** — derive default ports from the harness
+   path instead of hardcoded 4801/4802; `stop_drivers` refuses drivers whose
+   `/health` reports a different `HARNESS_DIR`. Two checkouts silently
+   corrupted each other in pilot 3 run 2. Picked 2026-08-13 (Arc A, in
+   flight).
+6. **Phone-seat visibility (driver-side only)** — three phone seats across
+   three pilots reported being blind to world state; partly game-side, scope
+   carefully. Stretch item on Arc A.
+7. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
+   killed a seat mid-run (pilot 3, finding 6); candidate change to
+   `packages/ai/src/utils/retry.ts`. Grows the rebase-sensitive surface;
+   consider upstreaming instead.
+8. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+   (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
+   branch `feat/expose-newsession-to-events` pushed, not yet posted.
 
 ## Shipped
 
