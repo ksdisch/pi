@@ -1,12 +1,15 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { closeForVideo, contextOptions, launchOptions, saveVideo, startServer, waitFor } from "./common.mjs";
+import { DEFAULT_LAPTOP_PORT, DEFAULT_PHONE_PORT, HARNESS_DIR } from "./ports.mjs";
 
-const HARNESS_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const PHONE_URL = process.env.PHONE_URL ?? "http://localhost:5180/phone.html";
-const PORT = Number(process.env.PHONE_DRIVER_PORT ?? 4802);
+// Default derived from this checkout's path (ports.mjs); the env override wins.
+const PORT = Number(process.env.PHONE_DRIVER_PORT ?? DEFAULT_PHONE_PORT);
+// Same derivation on the other seat's port, so the glance below finds the
+// laptop driver of THIS checkout and never a neighbouring one.
+const LAPTOP_URL = `http://127.0.0.1:${Number(process.env.LAPTOP_DRIVER_PORT ?? DEFAULT_LAPTOP_PORT)}`;
 const VIEWPORT = { width: 390, height: 720 };
 
 const POWER_LABELS = {
@@ -43,6 +46,62 @@ const readScreen = () =>
 			excerpt: text.replace(/\n{2,}/g, "\n").trim().slice(0, 700),
 		};
 	});
+
+/**
+ * The couch glance: what the phone player would see by looking up at the
+ * laptop screen. It is the laptop driver's own `/state` snapshot, fetched over
+ * the same localhost command surface the seats use.
+ *
+ * Why the harness owes the phone seat this: the premise is two people on one
+ * couch, and a co-located human sees the platformer. Headless drivers deny that
+ * — and three phone seats across three pilots then volunteered the same
+ * complaint, that they could not tell whether a partner died to the sentry, the
+ * pit, or something else. That blindness was the harness's, not the game's.
+ *
+ * What it deliberately is NOT: an in-game feedback channel. The phone UI shows
+ * none of this, so "the game should tell the phone player more" stays a live
+ * finding for anyone playing in separate rooms, and a report may not credit the
+ * game for what a glance supplied. Reports label it like any other
+ * driver affordance.
+ *
+ * Fail-soft, and bounded at 2s: a glance that cannot be taken must degrade the
+ * reply, never fail the `/read` the seat actually asked for. The laptop's
+ * `/state` runs off its serial chain (common.mjs), so a partner mid-maneuver —
+ * exactly when a glance is worth taking — still answers immediately.
+ *
+ * Ownership is checked before the first glance and never assumed: reading a
+ * neighbouring checkout's game is how pilot 3 produced a phantom clear, and a
+ * glance is a read channel into whatever process holds that port.
+ */
+let laptopOwner = null; // harnessDir the driver on LAPTOP_URL reported, once it answered
+
+async function glanceAtLaptop() {
+	try {
+		if (laptopOwner === null) {
+			const health = await fetch(`${LAPTOP_URL}/health`, { signal: AbortSignal.timeout(2_000) });
+			// Only a real answer settles it — a driver that has not started yet
+			// leaves this unchecked so a later glance can still succeed.
+			laptopOwner = (await health.json().catch(() => null))?.harnessDir ?? null;
+		}
+		if (laptopOwner === null) return { world: null, worldNote: "no glance — the laptop driver did not answer /health" };
+		if (laptopOwner !== HARNESS_DIR) {
+			return {
+				world: null,
+				worldNote: `refusing to glance — the driver on ${LAPTOP_URL} belongs to ${laptopOwner}, not this harness`,
+			};
+		}
+		const res = await fetch(`${LAPTOP_URL}/state`, { method: "POST", signal: AbortSignal.timeout(2_000) });
+		const body = await res.json().catch(() => null);
+		if (!res.ok) return { world: null, worldNote: `laptop driver: ${body?.error ?? `HTTP ${res.status}`}` };
+		if (!body?.state) return { world: null, worldNote: "laptop driver answered without a state snapshot" };
+		// `lastDeath` is where the partner actually died; `world.x`/`world.y` is
+		// where the game put them back. Kept as separate fields so the two can
+		// never be confused for one another.
+		return { world: body.state, worldLastDeath: body.lastDeath ?? null };
+	} catch (err) {
+		return { world: null, worldNote: `no glance at the laptop — ${String(err instanceof Error ? err.message : err)}` };
+	}
+}
 
 /**
  * In-page QuickMath executor: 3 problems / 30s. Reads each `a op b`, computes,
@@ -284,7 +343,9 @@ const routes = {
 		return { ...r, note: "did not reach the spellbook — check the excerpt for the error shown" };
 	},
 
-	"/read": async () => readScreen(),
+	// The glance rides on /read only — not on /solve, which returns the instant a
+	// cast lands because the laptop needs every millisecond of a ~3s freeze.
+	"/read": async () => ({ ...(await readScreen()), ...(await glanceAtLaptop()) }),
 
 	"/solve": async ({ power } = {}) => {
 		const label = POWER_LABELS[power];

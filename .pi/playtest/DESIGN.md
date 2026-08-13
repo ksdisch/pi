@@ -24,10 +24,14 @@ Pilot scope (locked): **one planet** (planet-1), two players, one run.
 ## Architecture
 
 ```
- pi session "laptop"  ── bash/curl ──▶  laptop driver :4801 ──▶ Chromium: game ?test=1
-        │ intercom (file channel, token-free waits)                    │ ws :3081
- pi session "phone"   ── bash/curl ──▶  phone driver  :4802 ──▶ Chromium: phone.html
+ pi session "laptop"  ── bash/curl ──▶  laptop driver ──▶ Chromium: game ?test=1
+        │ intercom (file channel, token-free waits)   │        │ ws :3081
+ pi session "phone"   ── bash/curl ──▶  phone driver ─┘ ──▶ Chromium: phone.html
+                                        (world glance)
 ```
+
+Driver ports are derived per checkout (see "Port isolation"); the phone driver's
+one call to the laptop driver is the world glance described below.
 
 **One persistent Playwright driver process per view**, each owning a long-lived
 headless Chromium page and speaking a tiny JSON-over-HTTP command surface on
@@ -39,15 +43,15 @@ retries live inside the driver, where they're free.
 Room code discovery needs no game change: the driver hooks the game page's
 websocket (`page.on('websocket')`) and reads the `room-created` frame.
 
-### Laptop driver (`driver/laptop.mjs`, port 4801)
+### Laptop driver (`driver/laptop.mjs`, derived port)
 
 | Command | Does |
 |---|---|
 | `POST /boot` | Launch browser → `?test=1` (co-op, no solo) → wait for Lobby → return `{roomCode}` |
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
-| `POST /state` | Compact `getState()` snapshot |
-| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns before/after x/y, respawn delta, `won`, sfx events. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
+| `POST /state` | Compact `getState()` snapshot. Runs off the serial command chain — it only reads, and the phone's world glance asks for it while this seat may be holding a 90s armed move |
+| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `won`, `reached-x`, `time-up`). A death adds `diedAt` (see "Death sites" below). Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
 
@@ -56,14 +60,54 @@ command**. In co-op mode every cast must come from the phone solving a real
 puzzle, exactly like a human pair. (The bridge's `cast()` would silently bypass
 the partner — that's a solo-verification affordance, not a co-op one.)
 
+**Death sites (`diedAt`) — where it died, not where it restarted.** A `/move`
+reply whose events include `respawned` (or `respawned-while-armed`) carries an
+extra `diedAt: {x, y}`. `state` stays the post-respawn truth; `diedAt` is the
+last position the driver observed while the respawn count was still the old one.
+
+Why it exists: the game respawns in the same frame it increments
+`respawnCount`, so any poll that notices a death already reads spawn
+coordinates. Every pilot's seats therefore reported dying "at x=84/88/92" —
+spawn is x=80 — and reasoned from it: pilot 3's laptop asked for Illuminate
+against a dark zone 570px away from where it actually died. Three runs of seat
+reasoning, and the first draft of pilot 3's own report, were built on respawn
+positions read as death positions.
+
+The `y` is what ends the misattribution, and cheaply: standing height (~476) means
+something on the ground reached you, a much larger y means you were already
+falling — pit, not sentry — with no reconstruction arithmetic in between. Two
+real deaths from the acceptance run, on the same planet, minutes apart:
+`diedAt {x: 496, y: 476}` (sentry, mid-patrol-band) and `diedAt {x: 776, y: 600}`
+(pit). Both reported `state.x` of 84 and 88 — the respawn point, which is what
+every seat before this change was reading.
+
+Two accuracy notes, stated so reports can carry them rather than discover them:
+
+- `diedAt` lags the true death by up to one 60ms poll, ~14px at the astronaut's
+  240px/s. It is a measurement with a known bias, not a game-reported event; the
+  game exposes no death position.
+- On a fall it is where the **fall registered**, not the edge that was left: the
+  astronaut keeps its horizontal speed all the way down, so the x is roughly
+  half a second of travel past the lip (656 → 776 in the run above). The `y`
+  says "fell"; the `x` bounds where the edge is, from the right.
+
 **Armed moves — the one latency affordance.** `/move` takes an optional
 `arm: {on: "freeze"|"platform", timeoutMs}` (`timeoutMs` only tightens the 90s
 ceiling, mirroring `maxMs` — a hold that outlived the caller's curl deadline
 would wedge the seat's serial command chain): the astronaut stands still until
-the trigger fires (`enemyFrozen` on; `platformCount` rising above the lowest
-count seen since arming — the game caps live platforms at one, so a fixed
-arm-time baseline could never fire after a re-arm), waits a fixed ~200ms
-human-reaction pause, then runs the pre-committed move. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
+the trigger fires, waits a fixed ~200ms human-reaction pause, then runs the
+pre-committed move. Both triggers read the **level**, not a rising edge:
+`enemyFrozen` is on, or a platform exists. A human who sees the enemy already
+frozen — or a bridge already standing over the pit — just goes. For the platform
+that is also the only rule the game still supports: since constellation
+`b7c308a` (refined by `d4f5a3c`) a summoned platform waits indefinitely until the
+astronaut *lands* on it — a side clip or an underside bonk does not start the
+countdown — and a re-cast onto one that is still waiting is banner-only, so an
+edge-triggered arm placed *after* a partner banked
+the platform (the flow that game change was built for) could never fire. It
+would hold the full 90s ceiling and then report `arm-timeout`, which the player
+prompt defines as "no cast came" — a driver manufacturing a coordination failure
+that never happened. Why it exists: both pilots died on the cue-to-cast round trip — the run-2
 pair invented the right "GO" protocol and still lost, because a ~3s freeze
 window cannot contain a ~12s+ LLM turn, so the harness was effectively
 playtesting with a reaction time no human has. Why it is still honest: it is
@@ -77,12 +121,12 @@ deaths are the clean measurement of "the game punishes waiting for your
 partner". Reports must label armed-move progress as driver-reflex, exactly like
 puzzle mechanics.
 
-### Phone driver (`driver/phone.mjs`, port 4802)
+### Phone driver (`driver/phone.mjs`, derived port)
 
 | Command | Does |
 |---|---|
 | `POST /join {code}` | Open phone.html, enter code, return spellbook summary |
-| `POST /read` | Which screen + visible text (phase, powers, stardust, errors) |
+| `POST /read` | Which screen + visible text (phase, powers, stardust, errors), plus `world` (the laptop's state snapshot) and `worldLastDeath` (where the partner last died) — see "The couch glance" |
 | `POST /solve {power}` | Tap the power, run the whole puzzle in-page, return a transcript (problems seen, answers given, tap sequence observed, duration, retries) |
 | `POST /screenshot` / `POST /shutdown` | as above |
 
@@ -95,6 +139,39 @@ tuned for thumbs, not tokens.) Trivia answers come from the question pool the
 page itself serves (`import('/src/.../triviaLogic.ts')` via the Vite dev
 server — still zero-diff); QuickMath is computed; TapSequence is observed from
 the demo flashes and repeated. The report must label driver-mechanics as such.
+
+**The couch glance (`/read` → `world`).** `/read` returns, alongside the phone
+screen, the laptop driver's own `/state` snapshot — position, `respawnCount`,
+`enemyFrozen`, `platformCount`, `darkZonePresent`, `lastCastPower` — and
+`worldLastDeath`, the laptop driver's last captured `diedAt`. The phone driver
+fetches both from the laptop driver's command port, whose `harnessDir` it
+verifies first, so a glance can only ever read this checkout's game.
+
+`worldLastDeath` is not decoration: the complaint this feature answers is
+specifically "I could not tell whether my partner died to the sentry, the pit,
+or something else", and a live snapshot cannot answer it — after a death,
+`world.x`/`world.y` is the **respawn point**, the exact artefact `diedAt` exists
+to defeat. The two travel as separate fields so neither seat can mistake one for
+the other, and the phone prompt carries the same warning the laptop prompt does.
+A human on the couch watches the death happen, so carrying it is the more
+faithful glance, not a more generous one.
+
+Why the harness owes the phone seat this: the premise is two people on one
+couch, and a co-located human looks up and sees the platformer. Headless drivers
+deny that, and the seats noticed — three phone seats across three pilots
+volunteered the same complaint, that they could not tell whether their partner
+died to the sentry, the pit, or something else, and that supporting blind felt
+bad. That specific blindness was the harness's, not the game's.
+
+Two limits keep it honest. It is **not** an in-game feedback channel: the phone
+UI shows none of this, so "the game should tell the phone player more" remains a
+live finding for anyone playing in separate rooms, and a report may never credit
+the game for what a glance supplied — label it like any other driver affordance.
+And it rides on `/read` only, never on `/solve`, which returns the instant a cast
+lands because the laptop needs every millisecond of a ~3s freeze; a glance costs
+the seat a deliberate look away from the phone, which is what it costs a human.
+It fails soft: an unreachable or not-yet-booted laptop driver returns
+`world: null` with a `worldNote`, bounded at 2s, and never fails the `/read`.
 
 ## Rate-limit strategy
 
@@ -145,6 +222,44 @@ prompts. `GAME_PORT` reaches the drivers as the `GAME_URL`/`PHONE_URL` the
 orchestrator derives from it and exports — the drivers navigate by URL, so
 exporting the bare port would health-check one server while Chromium opened
 another. So one override moves every side.
+
+### Port isolation (why the defaults are derived, not fixed)
+
+Pilot 3's second run was voided by this harness, not by the game.
+`~/Projects/party-line` holds a **copy** of it, a session there started a run
+while ours was mid-play, and both copies defaulted to the fixed ports
+4801/4802. `run-pilot.sh` shuts down whatever answers those ports before
+starting its own drivers (step 4), so each run killed the other's drivers and
+then drove the survivor's game: our seat read `lastCastPower` from casts our
+phone never made, our screenshots landed in the other checkout's `reports/`,
+and both runs produced plausible-looking, worthless results.
+
+Two changes, because either alone leaves a hole:
+
+- **Derived defaults** (`driver/ports.mjs`) — `HARNESS_DIR` (realpath'd, so a
+  symlinked checkout hashes to the same slot as itself) hashes to a port pair in
+  41000-44999, above where dev servers cluster and below macOS's ephemeral
+  range, on a stride of 2 so one checkout's laptop port can never be another's
+  phone port. Both drivers, `run-pilot.sh` and `verify-rails.sh` read their
+  defaults from that one module, so no side recomputes the derivation. Two
+  checkouts now cannot find each other at all.
+- **Ownership checks on both sides of the port** — `/health` reports
+  `harnessDir`, and nothing in the harness kills *or drives* a driver that
+  answers with a different one. `stop_drivers` refuses the shutdown and prints
+  what it refused; `run-pilot.sh`'s post-spawn health gate requires a matching
+  `harnessDir` rather than any HTTP 200, and aborts the run otherwise;
+  `verify-rails.sh` asserts the same before its first command; the phone's world
+  glance verifies it before it will return a `world`. Refusing to kill a foreign
+  driver is not the same as refusing to play through one — our own driver dies
+  on bind (`EADDRINUSE`, into a log nobody reads) and the foreign one would then
+  satisfy a bare health check for it, so both halves are needed. Together they
+  cover what the derivation can't: an explicit `LAPTOP_DRIVER_PORT=` override
+  that collides, or the ~1/2000 hash collision between two checkouts. A port
+  that answers nothing, or answers without a `harnessDir`, is left alone — the
+  pid files still reap the drivers this run started.
+
+`LAPTOP_DRIVER_PORT`/`PHONE_DRIVER_PORT` still win when set, and still move
+every side together.
 
 Everything the script backgrounds gets its own process group (`set -m`), and
 teardown kills the group — `npm run dev` is a wrapper around vite and the relay,
@@ -213,7 +328,10 @@ final critique for Kyle; players only report their own seat's experience.
 
 - Headless = no pixels for the players; they critique via state, driver
   observations, and screenshots they can't see (screenshots are for Kyle's
-  report). A vision pass is a v2 idea, not free-tier-viable today.
+  report). A vision pass is a v2 idea, not free-tier-viable today. The couch
+  glance gives the phone seat the same state numbers the laptop seat reads — it
+  restores what a co-located human would see of the *world*, not pixels, and
+  neither seat sees the game's art, animation, or feel.
 - PhaseAlign (`planet-3`) auto-solve is out of scope for the pilot.
 - One run, one planet; no persistence reset semantics beyond what the run needs.
 - Drivers trust localhost — no auth on the command ports; same trust boundary as
