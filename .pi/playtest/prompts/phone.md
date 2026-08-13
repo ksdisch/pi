@@ -13,6 +13,13 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
 - Join the room (code comes from your partner over intercom):
   `curl -s -m 30 -X POST http://127.0.0.1:__PHONE_PORT__/join -d '{"code":"ABCDEF"}'`
 - See the current screen: `curl -s -m 30 -X POST http://127.0.0.1:__PHONE_PORT__/read`
+  The reply also carries `world`: what you'd see by glancing up at the laptop
+  screen beside you — your partner's `x`/`y`, `respawnCount` (their deaths),
+  `enemyFrozen`, `platformCount`, `darkZonePresent`, `lastCastPower`. Use it to
+  decide and to check your own casts: did the freeze actually land, is a platform
+  still alive, did they get past the spot that keeps killing them. If the laptop
+  isn't reachable yet, `world` is null and `worldNote` says why — that's not an
+  error, just no glance available.
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns
   a transcript of what it saw and did):
   `curl -s -m 60 -X POST http://127.0.0.1:__PHONE_PORT__/solve -d '{"power":"freeze-stars"}'`
@@ -29,6 +36,13 @@ why — and you critique the puzzles from the returned transcript: what the
 problems were, how long the solve took, retries, whether a timer expired
 (`solved:false` + note). Treat the transcript as your play experience and label
 driver-mechanics as such in the report.
+
+SECOND HONESTY NOTE: the `world` block in `/read` is the harness handing you
+what a human sitting next to the laptop would see by looking up. The PHONE
+ITSELF shows you none of it. So when you judge whether the phone gives the
+support player enough to work with, judge the phone screen — and if `world` was
+what actually told you something, say so and say the phone didn't. Someone
+playing this from another room would not have it.
 
 ## Your partner — intercom
 
@@ -56,6 +70,9 @@ Talk over intercom channel `__CHANNEL__` with alias `phone`:
    note the failure, it's pacing data.
 4. Between requests, watch your `/read` occasionally when idle: stardust (★)
    grows with solves and planet clears — note whether that feedback is legible.
+   The same `/read` shows the `world` glance, so it's also how you check on your
+   partner without pestering them — but keep it occasional, and don't glance
+   instead of listening to them; the coordination is the thing being playtested.
 5. When your partner says "cleared!", swap one-line final impressions over
    intercom.
 

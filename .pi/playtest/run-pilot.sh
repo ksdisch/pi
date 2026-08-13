@@ -17,9 +17,17 @@ CONSTELLATION="${CONSTELLATION:-$HOME/Projects/constellation}"
 LAPTOP_MODEL="${LAPTOP_MODEL:-google/gemini-3.5-flash-lite}"
 PHONE_MODEL="${PHONE_MODEL:-google/gemini-3.1-flash-lite}"
 PILOT_TIMEOUT_S="${PILOT_TIMEOUT_S:-1500}"
+# Identity and default ports both come from driver/ports.mjs, so this script,
+# the drivers and verify-rails.sh agree without any of them recomputing the
+# derivation. Two checkouts on one machine therefore never share a port — the
+# failure that voided pilot 3 run 2. Env overrides still win.
+PORT_ENV="$(node "$DIR/driver/ports.mjs" --env)" ||
+	{ echo "ERROR: could not derive driver ports — is node on PATH? ($DIR/driver/ports.mjs)" >&2; exit 1; }
+eval "$PORT_ENV"
+HARNESS_ID="$PI_PLAYTEST_HARNESS_DIR"
 # Single-sourced with the drivers, which read these same names.
-LAPTOP_DRIVER_PORT="${LAPTOP_DRIVER_PORT:-4801}"
-PHONE_DRIVER_PORT="${PHONE_DRIVER_PORT:-4802}"
+LAPTOP_DRIVER_PORT="${LAPTOP_DRIVER_PORT:-$PI_PLAYTEST_LAPTOP_PORT}"
+PHONE_DRIVER_PORT="${PHONE_DRIVER_PORT:-$PI_PLAYTEST_PHONE_PORT}"
 GAME_PORT="${GAME_PORT:-5180}"
 RELAY_PORT="${RELAY_PORT:-3081}"
 # The drivers navigate by URL, not port, so GAME_PORT has to reach them as one —
@@ -66,9 +74,28 @@ stop_port() {
 # Report what each driver said it saved. A driver that never opened a page has
 # no video and says so with a null — only the end-of-run check (step 7) knows
 # whether one was actually expected, so this reports and does not judge.
+#
+# Each port is claimed before it is shut down: a driver whose /health reports a
+# different HARNESS_DIR belongs to another checkout of this harness and is left
+# strictly alone. Without that check this function is the corruption mechanism —
+# step 4 calls it on every run, so an unrelated checkout's live pilot got its
+# drivers killed mid-play and the two runs then drove each other's game. A port
+# that answers nothing, or answers without a harnessDir (not our driver at all),
+# is also left alone; the pid files below still reap the drivers we started.
 stop_drivers() {
-	local url out file
+	local url out file owner
 	for url in "$L" "$P"; do
+		# `|| true` inside the substitution: with `set -e` + `pipefail`, curl's
+		# exit 7 on "nothing is listening" — the normal case on a clean machine —
+		# would otherwise fail the assignment and abort the whole script.
+		owner="$(curl -s -m 5 "$url/health" 2>/dev/null | sed -n 's/.*"harnessDir":"\([^"]*\)".*/\1/p' || true)"
+		if [[ -z $owner ]]; then
+			continue
+		fi
+		if [[ $owner != "$HARNESS_ID" ]]; then
+			echo "  refusing to stop the driver on $url — it belongs to $owner, not $HARNESS_ID" >&2
+			continue
+		fi
 		out="$(curl -s -m "$SHUTDOWN_TIMEOUT_S" -X POST "$url/shutdown" 2>/dev/null || true)"
 		file="$(printf '%s' "$out" | sed -n 's/.*"videoFile":"\([^"]*\)".*/\1/p')"
 		[[ -n $file ]] && echo "  video saved: $file"
@@ -94,7 +121,7 @@ fi
 
 # Cleanup on every exit path, not just the happy one — a Ctrl-C, or the
 # preflight's own `exit 1` when a model's daily quota is spent, would otherwise
-# leave two drivers and their Chromium instances holding :4801/:4802. The two
+# leave two drivers and their Chromium instances holding the driver ports. The two
 # flags are separate because the drivers outlive the sessions in `drivers` mode,
 # and because the drivers are up long before there are any sessions to kill.
 CLEANUP_DRIVERS=0

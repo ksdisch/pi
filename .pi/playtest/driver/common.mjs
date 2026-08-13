@@ -1,12 +1,21 @@
 import http from "node:http";
 import path from "node:path";
+import { HARNESS_DIR } from "./ports.mjs";
 
 /**
  * Tiny JSON-over-HTTP command server. Commands are serialized through a single
  * promise chain: the drivers hold one live browser page, and two interleaved
  * maneuvers on it would corrupt both — a queued command waits its turn instead.
+ *
+ * `unqueued` lists routes that skip the chain. Only two kinds belong there:
+ * /shutdown (always off-chain — the wedged chain is exactly what it may need to
+ * break) and pure reads. A read is safe to run concurrently because what the
+ * chain protects is interleaved *input*, not `getState()`; and it has to be,
+ * because a read that queues behind a 90s armed hold answers long after the
+ * thing it was asked about.
  */
-export function startServer(name, port, routes) {
+export function startServer(name, port, routes, unqueued = []) {
+	const offChain = new Set(["/shutdown", ...unqueued]);
 	let chain = Promise.resolve();
 	const server = http.createServer(async (req, res) => {
 		const send = (status, obj) => {
@@ -16,7 +25,10 @@ export function startServer(name, port, routes) {
 		try {
 			const url = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
 			const path = url.pathname.replace(/\/+$/, "") || "/";
-			if (path === "/health") return send(200, { ok: true, name });
+			// `harnessDir` is how a caller tells this driver apart from an identically
+			// named one served by another checkout: the orchestrator refuses to shut
+			// down a driver that answers with someone else's directory.
+			if (path === "/health") return send(200, { ok: true, name, harnessDir: HARNESS_DIR });
 			const handler = routes[path];
 			if (!handler) return send(404, { error: `unknown command ${path}`, commands: Object.keys(routes) });
 			let body = {};
@@ -26,10 +38,8 @@ export function startServer(name, port, routes) {
 				const raw = Buffer.concat(chunks).toString("utf8").trim();
 				if (raw) body = JSON.parse(raw);
 			}
-			// /shutdown must not queue behind a wedged maneuver — the serial chain
-			// is exactly what it may need to break.
-			const result = path === "/shutdown" ? Promise.resolve().then(() => handler(body)) : chain.then(() => handler(body));
-			if (path !== "/shutdown") chain = result.catch(() => {});
+			const result = offChain.has(path) ? Promise.resolve().then(() => handler(body)) : chain.then(() => handler(body));
+			if (!offChain.has(path)) chain = result.catch(() => {});
 			send(200, (await result) ?? { ok: true });
 		} catch (err) {
 			send(500, { error: String(err instanceof Error ? err.message : err) });

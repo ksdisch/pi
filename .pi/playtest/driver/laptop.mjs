@@ -1,12 +1,12 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { chromium } from "playwright";
 import { closeForVideo, contextOptions, launchOptions, saveVideo, sleep, startServer, waitFor } from "./common.mjs";
+import { DEFAULT_LAPTOP_PORT, HARNESS_DIR } from "./ports.mjs";
 
-const HARNESS_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const GAME_URL = process.env.GAME_URL ?? "http://localhost:5180/?test=1";
-const PORT = Number(process.env.LAPTOP_DRIVER_PORT ?? 4801);
+// Default derived from this checkout's path (ports.mjs); the env override wins.
+const PORT = Number(process.env.LAPTOP_DRIVER_PORT ?? DEFAULT_LAPTOP_PORT);
 const VIEWPORT = { width: 960, height: 600 };
 /**
  * Ceiling on a single maneuver, independent of what the caller asks for. The
@@ -146,6 +146,16 @@ const routes = {
 	 * human reaction (ARM_REACTION_MS) and runs the move. The wait aborts without
 	 * moving on death, win, or arm.timeoutMs; an armed player is still a
 	 * stationary target, and that exposure is playtest data, not a bug.
+	 *
+	 * A death returns `diedAt` — where the astronaut was, not where the game put
+	 * it back. The game respawns in the same frame it increments `respawnCount`,
+	 * so a poll that sees the death already reads spawn coordinates; every pilot
+	 * so far mistook those for death sites and blamed the wrong hazard. Both
+	 * loops therefore keep the previous sample and return THAT: `diedAt` is the
+	 * last position observed with the old respawn count, so it lags the true
+	 * death by up to one 60ms poll (~14px at the 240px/s run speed). Its `y` is
+	 * the part that ends the misattribution — standing-height y means something
+	 * on the ground killed you, y far below means you fell.
 	 */
 	"/move": async ({
 		dir = "none",
@@ -178,10 +188,14 @@ const routes = {
 				const b = window.__constellation;
 				const pause = (t) => new Promise((r) => setTimeout(r, t));
 				let start = b.getState();
-				const before = { x: Math.round(start.astronautX), y: Math.round(start.astronautY) };
+				const at = (s) => ({ x: Math.round(s.astronautX), y: Math.round(s.astronautY) });
+				const before = at(start);
 				b.resetInput();
 				const events = [];
 				let armedForMs = null;
+				// The last sample taken while the respawn count was still the old one —
+				// the closest thing to "where it died" that a poll loop can see.
+				let lastSeen = before;
 				if (opts.arm) {
 					// "freeze" fires on the level (a human who sees the enemy already
 					// frozen just goes). "platform" fires on the count rising above the
@@ -203,15 +217,27 @@ const routes = {
 							// Re-baseline so the move loop's respawn check measures the
 							// move, not deaths that already aborted the wait.
 							start = b.getState();
+							lastSeen = at(start);
 							break;
 						}
 						if (s.won || s.respawnCount > start.respawnCount || t >= opts.arm.timeoutMs) {
-							events.push(
-								s.won ? "won" : s.respawnCount > start.respawnCount ? "respawned-while-armed" : "arm-timeout",
-							);
-							return { events, before, after: s, elapsedMs: 0, armedForMs: Math.round(t) };
+							const died = s.respawnCount > start.respawnCount;
+							events.push(s.won ? "won" : died ? "respawned-while-armed" : "arm-timeout");
+							return {
+								events,
+								before,
+								after: s,
+								elapsedMs: 0,
+								armedForMs: Math.round(t),
+								// Where it stood when something reached it, not where the game
+								// put it back. An armed astronaut is stationary, so this is the
+								// arming spot — which is the point: it names the place that was
+								// not as safe as the seat thought.
+								diedAt: died ? lastSeen : null,
+							};
 						}
 						floorPlatforms = Math.min(floorPlatforms, s.platformCount);
+						lastSeen = at(s);
 					}
 				}
 				if (opts.dir === "right") b.input.right = true;
@@ -220,6 +246,7 @@ const routes = {
 				let lastHop = -1_000;
 				let jumped = false;
 				let s = start;
+				let diedAt = null;
 				for (;;) {
 					await pause(60);
 					s = b.getState();
@@ -250,6 +277,7 @@ const routes = {
 					}
 					if (s.respawnCount > start.respawnCount) {
 						events.push("respawned");
+						diedAt = lastSeen;
 						break;
 					}
 					if (
@@ -264,6 +292,7 @@ const routes = {
 						events.push("time-up");
 						break;
 					}
+					lastSeen = at(s);
 				}
 				b.resetInput();
 				return {
@@ -272,6 +301,7 @@ const routes = {
 					after: s,
 					elapsedMs: Math.round(performance.now() - t0),
 					armedForMs,
+					diedAt,
 				};
 			},
 			{ dir, hop, jumpAtX, untilX, budget, arm: armOpts },
@@ -282,6 +312,10 @@ const routes = {
 			elapsedMs: result.elapsedMs,
 			state: compact(result.after),
 		};
+		// Only on a death: `state` is post-respawn truth, `diedAt` is where the
+		// astronaut actually was. Omitted entirely when nothing died, so its
+		// presence is the signal and no stale field can be misread as one.
+		if (result.diedAt) reply.diedAt = result.diedAt;
 		if (armOpts) reply.armedForMs = result.armedForMs;
 		return reply;
 	},
@@ -305,4 +339,7 @@ const routes = {
 	},
 };
 
-startServer("laptop-driver", PORT, routes);
+// /state runs off the serial command chain: it only reads, and the phone
+// driver's world glance (phone.mjs `/read`) asks for it while this seat may be
+// holding a 90s armed move.
+startServer("laptop-driver", PORT, routes, ["/state"]);

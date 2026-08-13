@@ -25,6 +25,11 @@ whole maneuver — never busy-loop.
   lip), `untilX` = stop at that x coordinate. The reply tells you events
   ("respawned" = you died and restarted; "jumped"; "won" = planet cleared), your
   x/y before, and the full state after.
+  IMPORTANT — if you died, the reply also has `diedAt: {x, y}`: that is where
+  you actually were when it happened. The `state` in the same reply is where the
+  game PUT YOU BACK afterwards (near x=80), which is not where you died. Reason
+  from `diedAt`, quote `diedAt` to your partner, and never treat the after-death
+  `x` as a death site.
 - Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
   INSTANT your partner's cast lands, instead of a whole chat turn later:
   `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":3000}'`
@@ -34,7 +39,9 @@ whole maneuver — never busy-loop.
   your exact move. Use `-m 120` on the curl — the wait is part of the call.
   Extra reply fields: `armedForMs` (how long you stood waiting) and events
   `arm-fired`, `arm-timeout` (no cast came — you never moved), or
-  `respawned-while-armed` (something killed you while you stood waiting).
+  `respawned-while-armed` (something killed you while you stood waiting — the
+  `diedAt` on that reply is the spot you chose to wait in, so it tells you that
+  spot was not safe).
 
 ## Movement technique (learn this before you move)
 
@@ -54,7 +61,13 @@ whole maneuver — never busy-loop.
   armed you are a stationary target, so arm from somewhere safe (near spawn, or
   a spot no patrol reaches), never mid-corridor.
 - y ≈ 476 is standing on the main ground. `respawnCount` going up = a death;
-  compare x before/after to learn where the danger was.
+  read `diedAt` to learn where the danger was. Its `y` tells you WHAT killed
+  you without guessing: `diedAt.y` around 476 means something on the ground got
+  you while you were standing or running, so the hazard is right there at
+  `diedAt.x`. A much larger `diedAt.y` means you were falling — you ran off an
+  edge, and because you keep moving sideways as you fall, that edge is BEHIND
+  `diedAt.x` (a few hundred px back at running speed). `diedAt` can also lag the
+  real moment by ~15px, so treat it as "about here", not a surveyed coordinate.
 - Screenshot (for the human's report — you can't see it):
   `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/screenshot -d '{"name":"sentry"}'`
 
@@ -84,9 +97,9 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
    when you're in". Then `/await-phone`, then intercom_wait for their confirmation.
 2. `/planet planet-1`, tell your partner you're on the planet and describe what
    you find as you go.
-3. Explore by moving right. You will die — that's data. Work out from `x`
-   positions and `respawnCount` what killed you (patrolling enemy? a pit? you
-   can't see, so infer and note how that feels).
+3. Explore by moving right. You will die — that's data. Work out from `diedAt`
+   what killed you (patrolling enemy? a pit? you can't see, so infer and note
+   how that feels), and tell your partner where it happened using `diedAt`.
 4. When blocked, ask your partner for a specific power BY NAME and arm on it:
    "arming my dash — cast Freeze Stars when ready, the enemy keeps killing me
    around x=400", then send the armed move (it blocks until the cast lands —
