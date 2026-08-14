@@ -163,12 +163,14 @@ describe("provider retry classification", () => {
 				isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body(ids) })),
 			).toBe(true);
 		}
-		// A non-per-minute violation in the set still fails the every() gate.
+		// A non-per-minute violation in the set fails the every() gate itself —
+		// PerHour dodges both the /PerDay/ guard and the per-minute match, so this
+		// assertion is the one that trips if the gate is ever loosened.
 		expect(
 			isRetryableAssistantError(
 				fauxAssistantMessage("", {
 					stopReason: "error",
-					errorMessage: body([requests, "GenerateRequestsPerDayPerProjectPerModel-FreeTier"]),
+					errorMessage: body([requests, "GenerateContentInputTokensPerModelPerHour-FreeTier"]),
 				}),
 			),
 		).toBe(false);
