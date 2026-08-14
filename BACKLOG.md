@@ -40,15 +40,10 @@ for decision briefs.
    across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
-6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
-   killed a seat mid-run (pilot 3, finding 6; both pilot-4 runs died the same
-   way, at ~3.5 and ~5.5 min); candidate change to
-   `packages/ai/src/utils/retry.ts`. Grows the rebase-sensitive surface;
-   consider upstreaming instead.
-7. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+6. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
-8. **Capture deaths that complete between moves** — pilot 5 finding 3
+7. **Capture deaths that complete between moves** — pilot 5 finding 3
    (unsequenced; appended at the end pending grooming). A `/move` reply can
    only report a death inside the move, so a fall that outlives a `reached-x`
    or a freeze that lapses while parked leaves `respawnCount` advanced with no
@@ -64,7 +59,7 @@ for decision briefs.
    with a celebratory screenshot — sits on an invisible death, while all 26
    of pilot 7's captured deaths were read correctly. The sampler is what
    makes the misread checkable.
-9. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+8. **Stop handoff-digest injection into playtest seats** — pilot 5, review
     finding F8 (unsequenced; appended pending grooming). The handoff extension
     injected run A's phone-session shutdown digest into run B's laptop seat at
     startup: cross-run contamination that cost the seat its first turn and
@@ -74,6 +69,20 @@ for decision briefs.
 
 ## Shipped
 
+- **Token-rate 429 retryability** (2026-08-14) — closes the former Active item
+  6. A `GenerateContent…InputTokensPerModelPerMinute` 429 whose body states a
+  retry delay (`RetryInfo` / "Please retry in …s") is now retryable in
+  `packages/ai/src/utils/retry.ts`: the stated delay discriminates a rolling
+  window filled by earlier requests (the shape that killed four pilot seats
+  fail-fast, at 39.2s/49.5s stated delays) from a request whose context alone
+  exceeds the cap (no delay stated → still fail-fast). Request-rate per-minute
+  quotas stay retryable as before; per-day violations and account markers stay
+  terminal over everything; the 90s server-delay clamp reasoning still holds
+  (token windows are also rolling 60s). Tests pin the flipped captured
+  fixture, the no-delay case, per-day-outranks, and mixed violations (39/39).
+  Rebase surface unchanged: only files already on the fork's
+  rebase-sensitive list were touched, and per that list's precedent no
+  upstream changelog entry was added.
 - **Intercom wait-start boundary bug: reproduced and fixed** (2026-08-14) —
   closes the former Active item 9 (scripted repro for the delivery
   anomalies), through the fix rather than just the repro. Mechanism
