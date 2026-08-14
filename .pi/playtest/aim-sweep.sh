@@ -273,8 +273,9 @@ done
 # --- summary ----------------------------------------------------------------
 # The header promises one, and hand-tallying 68 TRIAL lines is how the first
 # draft of the report shipped a Block C table that dropped a trial and miscounted
-# the no-jump row (adversarial review F1). Anything a reader might otherwise
-# count by eye gets counted here instead.
+# the no-jump row (adversarial review F1). Every figure the report's own tables
+# are built from is therefore derived here: per-cell trial and verdict counts,
+# and the four outcome classes with their take-off spans (F11).
 echo
 echo "== summary =="
 python3 - "$LOG" <<-'PY'
@@ -286,8 +287,10 @@ for line in open(sys.argv[1]):
     f = line.rstrip("\n").split("\t")
     g = lambda k: (re.search(k + r"=(\S+)", line) or [None, None])[1]
     m = re.search(r"apex=\((\d+),(\d+)\)", line)
+    t = g("takeoff")
     rows.append({
         "block": f[1], "V": g("V"), "cut": g("cut"), "park": g("park"),
+        "takeoff": None if t in (None, "None") else int(t),
         "apexy": int(m.group(2)) if m else None,
         "bridge": (lambda b: None if b in (None, "None") else int(b))(g("bridge")),
         "verdict": next(t for t in f if t.startswith(("FELL", "LAND", "DIED", "GROUND", "WON", "AIRBORNE"))).split("@")[0],
@@ -300,8 +303,24 @@ for blk in sorted({r["block"] for r in rows}):
     # used for this and the trace has to be.
     nojump = [r for r in br if r["apexy"] is not None and r["apexy"] >= 470]
     onbridge = [r for r in br if r["bridge"] is not None]
+    # The four outcome classes the report's take-off table is built from. They
+    # are counted here so that table is derived, not eye-counted off 48 rows —
+    # which is the same failure mode that put a wrong Block C row in the first
+    # draft, one table over.
+    bonk = [r for r in br if r["apexy"] is not None and 380 <= r["apexy"] < 470]
+    clean = [r for r in br if r["apexy"] is not None and r["apexy"] < 380]
+    span = lambda rs: ("%s-%s" % (min(x["takeoff"] for x in rs), max(x["takeoff"] for x in rs))
+                       if [x for x in rs if x["takeoff"] is not None] else "n/a")
     print("  block %s: n=%d  %s" % (blk, len(br), dict(collections.Counter(r["verdict"] for r in br))))
-    print("    never left the ground: %d   touched the bridge: %d" % (len(nojump), len(onbridge)))
+    print("    never left the ground: %-3d ceiling-bonked: %-3d clean jumps: %d" % (len(nojump), len(bonk), len(clean)))
+    print("      bonked take-offs %s (apexY %s)" % (
+        span(bonk), sorted({r["apexy"] for r in bonk}) or "-") if bonk else "      bonked: none")
+    cb = [r for r in clean if r["bridge"] is not None]
+    cm = [r for r in clean if r["bridge"] is None]
+    if cb: print("      clean + touched bridge: %-3d take-offs %s  touchdown %s-%s" % (
+        len(cb), span(cb), min(r["bridge"] for r in cb), max(r["bridge"] for r in cb)))
+    if cm: print("      clean + missed bridge:  %-3d take-offs %s" % (len(cm), span(cm)))
+    print("    touched the bridge (any class): %d" % len(onbridge))
     keys = collections.OrderedDict()
     for r in br:
         keys.setdefault((r["V"], r["cut"], r["park"]), []).append(r)
