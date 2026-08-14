@@ -35,8 +35,9 @@ for decision briefs.
    0.65s of the thaw. Carrying e.g. `freezeMsLeft` lets a seat tell a fresh cast
    from a lapsing one. Observability, not assistance — a human watching the
    screen already sees it. Pilot 5 made the platform half systematic (its
-   finding 4): with platforms persisting indefinitely, all five stale-platform
-   arms across both runs fired in 60–64ms with no freeze up and all five died —
+   finding 4): with platforms persisting indefinitely, all five arms placed
+   against an already-standing platform fired in 60–64ms with no freeze up
+   across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
 6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
@@ -58,6 +59,23 @@ for decision briefs.
    is simply absent. Candidate: a light idle sampler in the laptop driver that
    keeps `lastDeath` current while no move runs — observes only, honesty split
    untouched.
+9. **Scripted repro for the intercom idle-wake latency** — pilot 5 finding 8
+   (unsequenced; appended pending grooming). One delivery to an *idle* seat
+   took 20.8s against 1.2–6.1s for every delivery to a busy one, ~14× the
+   intercom extension's 1.5s poll — and idle is exactly the case the
+   `deliverAs: "steer"` / `triggerTurn: true` path exists to make fast. One
+   observation is not a diagnosis: build a scripted repro (an idle session, a
+   timed send, delivery stamped at both ends) before trusting it or filing it
+   as an extension bug. If it holds, it also reprices the seat rule the pilot
+   5 drift broke — ending a turn without `intercom_wait` cost ~21s of
+   deafness, which no prompt currently warns about.
+10. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+    finding F8 (unsequenced; appended pending grooming). The handoff extension
+    injected run A's phone-session shutdown digest into run B's laptop seat at
+    startup: cross-run contamination that cost the seat its first turn and
+    weakens any cross-run independence claim a report makes. Decide how seat
+    sessions opt out (e.g. `run-pilot.sh` launching seats with the handoff
+    extension disabled or env-gated) and implement it.
 
 ## Shipped
 
@@ -74,9 +92,10 @@ for decision briefs.
   and the seat still misread it as "Cleared the pit" (report finding 7). The
   protocol fix measured clean: 18/18 arms fired, zero `arm-timeout`s, zero
   deadlocks (pilot 4: three and two ~90s). Costs surfaced: 3 of 19 deaths
-  completed between moves and are invisible to the death telemetry; five
-  stale-platform arms fired instantly and died (folded into the trigger-life
-  item); and the deadlock-free pace hit the free-tier 250k input-tokens/min
+  completed between moves and are invisible to the death telemetry; five arms
+  placed against an already-standing platform fired instantly and died (folded
+  into the trigger-life item); and the deadlock-free pace hit the free-tier
+  250k input-tokens/min
   cap sooner — 3m27s and 1m54s of play. See
   `.pi/playtest/PILOT-2026-08-13-run5.md`.
 - **Jump-outcome telemetry on `/move`** (2026-08-13, PR #25) — the aim sweep's
