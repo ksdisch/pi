@@ -86,6 +86,12 @@ whole maneuver — never busy-loop.
 - To cross a gap: run at it with `jumpAtX` set just before the edge, then
   settle, check y, and take the next gap the same way. Random `hop` over a gap
   is how you fall in it.
+- A jump carries your run with it: you keep moving sideways in the air for as
+  long as the move is still holding a direction, so your landing spot is
+  chosen by where the run STOPS, not by where you pressed jump. To land ON
+  something, set `untilX` a little past where you want to come down; an
+  `untilX` (or an `ms`) far beyond it means you hold the run through the
+  whole flight and fly over everything.
 - To beat a short power window, don't wait for a chat confirmation — pre-commit:
   tell your partner which power you need and that you're arming on it ("arming
   my dash — cast Freeze Stars when ready"), then send the armed move. The ask

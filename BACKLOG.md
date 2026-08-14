@@ -96,7 +96,8 @@ for decision briefs.
   apexY 362, `diedAt` x=892–896) and never suspected the held input; run A
   issued `untilX: 800` — inside the bridge span — and 720 on walk-ins only,
   and no seat has ever paired a bridge-band `untilX` with a `jumpAtX` in six
-  pilots (report finding 2 proposes the missing technique line). Run B lived 9m05s — the longest of any pilot —
+  pilots (report finding 2 proposes the missing technique line). Run B lived
+  9m05s — the longest of any pilot —
   because two 90s arm-timeouts and a 63s hold were token-free quota relief.
   Major harness catch: the intercom wait-start boundary bug (item 9's
   sharpening) manufactured one of those timeouts with both seats behaving
