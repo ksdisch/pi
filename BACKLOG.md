@@ -58,15 +58,20 @@ for decision briefs.
   exposes no contact flag and the harness stays zero-diff on constellation — with
   a rest defined as two samples at the same height arrived at from above, the
   last clause being what keeps a jump's apex from reading as a ledge.
-  **Re-measured across a full 68-trial `aim-sweep.sh` re-run** (log
-  `20260813-203716`), which now records both fields per trial and scores them
-  against the independent trajectory trace: **68 of 68 take-off verdicts agree,
-  0 disagree**; 16 deaths report a bridge-height `lastStoodAt` (429/430, x
-  828–840 off a bridge spanning 722–818) against 43 at ground height (476/477),
-  with no overlap — the "landed, then walked off the far edge" class that used to
-  be indistinguishable from a plain pit death. Adversarial review raised 2
-  should-fix and 5 nice-to-have findings, all fixed. See
-  `.pi/playtest/DESIGN.md`.
+  **Measured across a full 68-trial `aim-sweep.sh` run against the shipped code**
+  (log `20260813-210539`), which now records both fields per trial and scores
+  them against the independent trajectory trace: **68 of 68 take-off verdicts
+  agree, 0 disagree**, none unresolved. Of 59 deaths, 14 report a bridge-height
+  `lastStoodAt` (429, x 828–836 off a bridge spanning 722–818) and 36 report
+  ground height (476) — the "landed, then walked off the far edge" class that
+  used to be indistinguishable from a plain pit death, with every bridge row
+  trace-confirmed. The detector under-reports rather than inventing: 9 deaths
+  report nothing (block C's stage-two moves cross the fall edge inside the first
+  poll, so no rest is observed in that move) and 1 of 15 bridge rests was scored
+  as the earlier ground rest. Adversarial review ran three rounds — 3 should-fix
+  and 6 nice-to-have findings, all fixed and verified; the third round exists
+  because round 2 caught the verification numbers having been measured on the
+  pre-fix driver. See `.pi/playtest/DESIGN.md`.
 - **Planet-1 aim sweep** (2026-08-13) — the experiment pilot 4 owed, run as a
   scripted 68-trial probe (`aim-sweep.sh`) rather than another two-seat pilot,
   because a free-tier seat dies inside 5.5 minutes and this needed ~70 attempts.

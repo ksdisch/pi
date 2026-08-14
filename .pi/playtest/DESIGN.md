@@ -117,11 +117,22 @@ exactly, and a first sample with no predecessor to compare against records
 nothing — because a 1px slack admits the first sample of a fall, which covers
 only ~1.6px in 60ms.
 
-Two limits, stated so reports carry them rather than discover them. It is the
+Both halves being strict makes the detector **under-report rather than invent**,
+which is the right direction for a field a seat reasons from. Measured over the
+68-trial sweep at this build (`logs/20260813-210539-aim-sweep.log`): of 59
+deaths, 14 named the bridge (429) and 36 the ground (476) — only those two
+values, none of the off-by-one readings a 1px slack produced — every one of the
+14 confirmed by the trace; 1 of 15 real bridge rests was scored as the earlier
+ground rest, and 9 deaths reported nothing.
+
+Three limits, stated so reports carry them rather than discover them. It is the
 last *sampled* rest, so its `x` can be up to one poll (~14px) along the surface
 from where the astronaut actually left it — the same bias `diedAt` has, and the
-`y` is the part the bridge-vs-ground question turns on. And it is absent when
-the driver never caught a rest at all, including every `respawned-while-armed`
+`y` is the part the bridge-vs-ground question turns on. It is scoped to **this
+move**: the nine silent deaths above are all two-stage maneuvers whose second
+move begins parked at the lip and crosses the fall edge inside the first poll, so
+the rest that matters happened in the previous call. And it is absent when the
+driver never caught a rest at all, including every `respawned-while-armed`
 death: an armed astronaut stands still, so `diedAt` is already the spot it stood
 in.
 
