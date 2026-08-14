@@ -25,6 +25,12 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   can tell a death that just happened from an older one. `worldLastDeath.y`
   around 476 means something on the ground got them; much larger means they
   fell. If it's null, nobody has died yet this session.
+  When they fell, `worldLastDeath.lastStoodAt: {x, y}` is the last place they
+  were STANDING before it — what they fell off, where the death site is only
+  where the fall ended. A `lastStoodAt.y` around 476 means they walked off the
+  main ground; a noticeably smaller `y` means they were up on something (a
+  platform you summoned, a ledge) and came off THAT — which is worth telling
+  them, because it means they got there and then lost it.
   If the laptop isn't reachable yet, `world` is null and `worldNote` says why —
   that's not an error, just no glance available.
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns

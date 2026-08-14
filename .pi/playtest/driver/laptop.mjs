@@ -31,6 +31,15 @@ const ARM_TIMEOUT_MAX_MS = 90_000;
  * (DESIGN.md honesty rules).
  */
 const ARM_REACTION_MS = 200;
+/**
+ * How far the astronaut must rise after a jump press before the driver calls it
+ * a real take-off, and how long it waits for that rise before calling the press
+ * inert. A jump (v0 460px/s) lifts ~26px inside one 60ms poll, while a grounded
+ * or falling astronaut rises 0 — so 8px is clear of both by a wide margin, and
+ * 240ms is four polls. See the take-off notes on `/move`.
+ */
+const JUMP_RISE_PX = 8;
+const JUMP_RESOLVE_MS = 240;
 
 let browser = null;
 let page = null;
@@ -166,6 +175,35 @@ const routes = {
 	 * death by up to one 60ms poll (~14px at the 240px/s run speed). Its `y` is
 	 * the part that ends the misattribution — standing-height y means something
 	 * on the ground killed you, y far below means you fell.
+	 *
+	 * A death also returns `lastStoodAt` — the last spot the astronaut was
+	 * RESTING on a surface before it died. `diedAt` says where the fall ended;
+	 * this says what it fell off. Without it, "landed on the bridge and then ran
+	 * off its far edge" and "never reached the bridge at all" are the same
+	 * reply: both end `respawned` with a pit `diedAt` a few hundred px right of
+	 * the hazard. Nineteen of the 68 aim-sweep trials were the first and read as
+	 * the second. Resting is inferred from y alone — the game exposes no
+	 * "on the ground" flag (`BridgeState` carries `astronautY` and nothing else
+	 * about contact) — as two consecutive samples at the same height that were
+	 * ARRIVED AT from above. That last clause is what keeps a jump's apex out:
+	 * near the top the astronaut is barely moving, so two samples there can
+	 * round to the same y, but the sample before them is always lower (larger y)
+	 * because it was still climbing.
+	 *
+	 * `jumpAtX` returns a verdict, not a keypress. `jumped` used to be pushed
+	 * the moment the driver set the jump input, which is a different claim from
+	 * "the astronaut left the ground": the game only grants a jump from the
+	 * ground, so a press issued while already airborne — past a pit's edge, say
+	 * — does nothing, and every one of the eight aim-sweep trials that never
+	 * left the ground still reported `jumped`. The driver now waits to see the
+	 * astronaut rise JUMP_RISE_PX before pushing `jumped`, and pushes
+	 * `jump-ignored` when the press was inert. The same verdict rides in a
+	 * `jump: {tookOff, pressedAt, apexY}` field; `apexY` is the highest point
+	 * reached after the press — which is also how a ceiling-clipped jump tells
+	 * itself apart from a clean one. It covers the whole rest of the move, so
+	 * with `hop` also on it can belong to a later bounce rather than to this
+	 * jump; a lone `jumpAtX`, which is what a gap is taken with, has no later
+	 * bounce to confuse it with.
 	 */
 	"/move": async ({
 		dir = "none",
@@ -206,6 +244,14 @@ const routes = {
 				// The last sample taken while the respawn count was still the old one —
 				// the closest thing to "where it died" that a poll loop can see.
 				let lastSeen = before;
+				// The two previous samples' rounded y, for the rest test in the move loop:
+				// a surface rest is a flat PAIR, and the sample before that pair is what
+				// separates one from a jump's apex.
+				let y1 = null;
+				let y2 = null;
+				// Last spot the astronaut was observed resting on a surface. Reported on a
+				// death, where it names what was fallen off.
+				let lastStood = null;
 				if (opts.arm) {
 					// Both triggers fire on the LEVEL, not on a rising edge: a human who
 					// sees the enemy already frozen — or a bridge already standing over the
@@ -255,14 +301,27 @@ const routes = {
 				}
 				if (opts.dir === "right") b.input.right = true;
 				if (opts.dir === "left") b.input.left = true;
+				// Seed the y history with the sample the move starts from — a real
+				// reading one poll old, and after an armed wait the re-baselined one. It
+				// matters most for a move that begins mid-air: without it the first
+				// sample has no predecessor, and a jump requested on it would be judged
+				// with no way to notice the astronaut was already climbing.
+				y1 = lastSeen.y;
 				const t0 = performance.now();
 				let lastHop = -1_000;
-				let jumped = false;
+				// The one-shot jump: where and when the driver pressed it, whether the
+				// astronaut was already climbing at that moment (it can only have been
+				// airborne, and the game grants no jump in the air), the highest point
+				// reached since, and the verdict — null until the rise decides it.
+				let jumpPress = null;
+				let jumpApexY = null;
+				let tookOff = null;
 				let s = start;
 				let diedAt = null;
 				for (;;) {
 					await pause(60);
 					s = b.getState();
+					const here = at(s);
 					const t = performance.now() - t0;
 					if (opts.hop && t - lastHop > 420) {
 						b.input.jump = true;
@@ -271,9 +330,17 @@ const routes = {
 						}, 120);
 						lastHop = t;
 					}
+					// Nothing about the jump means anything once the astronaut is a
+					// different life: the game respawns in the same frame it bumps the
+					// count, and the spawn point is 36px ABOVE standing height — read as a
+					// height sample it looks exactly like a rise, and would report a jump
+					// that never happened as a take-off. The post-loop resolver picks up a
+					// press left unjudged here.
+					const alive = s.respawnCount === start.respawnCount;
 					if (
+						alive &&
 						opts.jumpAtX != null &&
-						!jumped &&
+						jumpPress == null &&
 						((opts.dir === "right" && s.astronautX >= opts.jumpAtX) ||
 							(opts.dir === "left" && s.astronautX <= opts.jumpAtX))
 					) {
@@ -281,8 +348,23 @@ const routes = {
 						setTimeout(() => {
 							b.input.jump = false;
 						}, 120);
-						jumped = true;
-						events.push("jumped");
+						jumpPress = { at: here, t, climbing: y1 - here.y > 1 };
+						jumpApexY = here.y;
+					}
+					// The apex keeps updating for the rest of the move, not just until the
+					// verdict lands — a jump is only ~22px up at the first sample after the
+					// press and tops out around 110px, so freezing it at the moment
+					// `tookOff` resolves would report the take-off, not the peak.
+					if (alive && jumpPress != null && here.y < jumpApexY) jumpApexY = here.y;
+					// Resolve that press into a take-off or an inert keypress. `jumped` is
+					// only pushed once the astronaut is seen to actually rise; a press made
+					// while already climbing needs no wait at all, since being airborne is
+					// the whole reason the game ignores it.
+					if (alive && jumpPress != null && tookOff == null) {
+						if (jumpPress.climbing) tookOff = false;
+						else if (jumpPress.at.y - jumpApexY >= opts.jumpRisePx) tookOff = true;
+						else if (t - jumpPress.t >= opts.jumpResolveMs) tookOff = false;
+						if (tookOff != null) events.push(tookOff ? "jumped" : "jump-ignored");
 					}
 					if (s.won) {
 						events.push("won");
@@ -305,19 +387,55 @@ const routes = {
 						events.push("time-up");
 						break;
 					}
-					lastSeen = at(s);
+					// Everything below runs only on samples the astronaut survived, which
+					// is why it sits under the break checks: on the death sample `s` is
+					// already the respawned astronaut standing at spawn, and letting that
+					// in would record spawn as the last surface it stood on.
+					lastSeen = here;
+					// A flat pair means resting. `y2 <= here.y` is the arrived-from-above
+					// test that keeps a jump's apex out — see the docblock. (`y1` is
+					// always a real reading by here; only `y2` can still be unset, on the
+					// first sample of the move.)
+					if (Math.abs(here.y - y1) <= 1 && (y2 == null || y2 <= here.y)) lastStood = here;
+					y2 = y1;
+					y1 = here.y;
 				}
 				b.resetInput();
+				const elapsedMs = Math.round(performance.now() - t0);
+				// A move that ended in the same breath as the jump press never saw the
+				// astronaut rise. Input is off now, so spending a few polls watching costs
+				// the maneuver nothing and beats guessing — except after a death or a win,
+				// where the scene has moved on and the answer is already settled: a
+				// respawn one poll after the press means it was falling, not climbing.
+				if (jumpPress != null && tookOff == null) {
+					if (!events.includes("respawned") && !events.includes("won")) {
+						const tw = performance.now();
+						while (performance.now() - tw < opts.jumpResolveMs) {
+							await pause(60);
+							const w = b.getState();
+							// A death mid-wait ends the wait rather than feeding it: the same
+							// spawn-is-higher-than-standing trap as in the loop.
+							if (w.respawnCount > start.respawnCount) break;
+							const y = Math.round(w.astronautY);
+							if (y < jumpApexY) jumpApexY = y;
+							if (jumpPress.at.y - jumpApexY >= opts.jumpRisePx) break;
+						}
+					}
+					tookOff = !jumpPress.climbing && jumpPress.at.y - jumpApexY >= opts.jumpRisePx;
+					events.push(tookOff ? "jumped" : "jump-ignored");
+				}
 				return {
 					events,
 					before,
 					after: s,
-					elapsedMs: Math.round(performance.now() - t0),
+					elapsedMs,
 					armedForMs,
 					diedAt,
+					lastStood,
+					jump: jumpPress == null ? null : { tookOff, pressedAt: jumpPress.at, apexY: jumpApexY },
 				};
 			},
-			{ dir, hop, jumpAtX, untilX, budget, arm: armOpts },
+			{ dir, hop, jumpAtX, untilX, budget, arm: armOpts, jumpRisePx: JUMP_RISE_PX, jumpResolveMs: JUMP_RESOLVE_MS },
 		);
 		const reply = {
 			events: result.events,
@@ -325,15 +443,30 @@ const routes = {
 			elapsedMs: result.elapsedMs,
 			state: compact(result.after),
 		};
+		// Same omit-when-absent rule as `diedAt`: a `jump` field means the driver
+		// reached the requested x and pressed there. A `jumpAtX` that never came up
+		// — the astronaut died first, or the move ended before reaching it — leaves
+		// the field off rather than reporting on a jump that was never attempted.
+		if (result.jump) reply.jump = result.jump;
 		// Only on a death: `state` is post-respawn truth, `diedAt` is where the
 		// astronaut actually was. Omitted entirely when nothing died, so its
 		// presence is the signal and no stale field can be misread as one.
 		if (result.diedAt) {
 			reply.diedAt = result.diedAt;
+			// What it fell OFF, when the driver caught it standing on anything during
+			// this move. Absent on a `respawned-while-armed` death — an armed astronaut
+			// stands still, so `diedAt` is already the spot it was standing in — and on
+			// a move that never once observed it at rest.
+			if (result.lastStood) reply.lastStoodAt = result.lastStood;
 			// Kept for /state, where the age matters: a glance arriving much later
 			// must be able to tell "just now" from "ten deaths ago", so the death's
 			// own respawn count and wall-clock time travel with the position.
-			lastDeath = { ...result.diedAt, respawnCount: result.after.respawnCount, atIso: new Date().toISOString() };
+			lastDeath = {
+				...result.diedAt,
+				...(result.lastStood ? { lastStoodAt: result.lastStood } : {}),
+				respawnCount: result.after.respawnCount,
+				atIso: new Date().toISOString(),
+			};
 		}
 		if (armOpts) reply.armedForMs = result.armedForMs;
 		return reply;

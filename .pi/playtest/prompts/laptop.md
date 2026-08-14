@@ -23,13 +23,28 @@ whole maneuver — never busy-loop.
   bunny-hop on a timer while moving, `jumpAtX` = jump exactly ONCE when your x
   crosses that value (the way a human takes a gap: one deliberate jump at the
   lip), `untilX` = stop at that x coordinate. The reply tells you events
-  ("respawned" = you died and restarted; "jumped"; "won" = planet cleared), your
-  x/y before, and the full state after.
+  ("respawned" = you died and restarted; "jumped"; "jump-ignored"; "won" =
+  planet cleared), your x/y before, and the full state after.
   IMPORTANT — if you died, the reply also has `diedAt: {x, y}`: that is where
   you actually were when it happened. The `state` in the same reply is where the
   game PUT YOU BACK afterwards (near x=80), which is not where you died. Reason
   from `diedAt`, quote `diedAt` to your partner, and never treat the after-death
   `x` as a death site.
+  ALSO on a death: `lastStoodAt: {x, y}` — the last place you were STANDING on
+  something before you died. That is what you fell off, where `diedAt` is only
+  where the fall ended. If its `y` is about 476 you were on the main ground; a
+  noticeably smaller `y` means you were standing on something raised (a summoned
+  platform, a ledge) and then left it. Two very different mistakes look the same
+  in `diedAt` and different here: falling straight into a gap, versus getting
+  across, landing, and then running off the far side of what you landed on.
+  AND if you asked for `jumpAtX`: `jump: {tookOff, pressedAt, apexY}`.
+  `tookOff: false` (event "jump-ignored") means the jump NEVER HAPPENED — you
+  were already off the ground when the input went in, and you can only jump from
+  the ground, so it did nothing. Treat that as an aim you never got to test,
+  not as an aim that failed. `tookOff: true` (event "jumped") means you really
+  left the ground, and `apexY` is the highest point that jump reached (smaller y
+  = higher). A jump whose `apexY` is much LARGER than your other jumps' got
+  stopped short — something above you was in the way.
 - Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
   INSTANT your partner's cast lands, instead of a whole chat turn later:
   `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":3000}'`
@@ -71,6 +86,10 @@ whole maneuver — never busy-loop.
   `diedAt.x` — about 100-150px back, roughly half a second of falling at running
   speed. `diedAt` can also lag the
   real moment by ~15px, so treat it as "about here", not a surveyed coordinate.
+  `lastStoodAt` on the same reply closes that loop: it is the last spot you were
+  standing before the fall, so it names the edge itself instead of bounding it,
+  and its `y` says whether you were on the main ground or on something raised
+  when you left it.
 - Screenshot (for the human's report — you can't see it):
   `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/screenshot -d '{"name":"sentry"}'`
 
