@@ -321,6 +321,16 @@ final critique for Kyle; players only report their own seat's experience.
    mid-level between turns is lethal (sentry patrol), which the laptop prompt
    now teaches as technique without leaking the level layout.
 2. **Then the pilot:** run `run-pilot.sh`, two live sessions, one planet.
+2b. **Scripted measurement, when a pilot leaves a question open** — DONE
+   (2026-08-13): `aim-sweep.sh` sweeps one `/move` parameter across many trials
+   and records each outcome, for questions a pilot cannot answer because a
+   free-tier seat dies long before the sample size arrives. Same rules as
+   `verify-rails.sh`: it drives the real drivers, it is not a seat, and player
+   prompts must never reference it. Two techniques it added are reusable —
+   `/planet` as a per-trial reset (`scene.start`, so no state leaks between
+   trials) and a live trajectory trace, which works only because `/state` is
+   registered off the laptop driver's serial command chain and so answers while
+   a `/move` is still running. See `AIM-SWEEP-2026-08-13.md`.
 3. Keep `reports/` + driver logs as run artifacts (git-ignored except the pilot
    report Kyle gets).
 
