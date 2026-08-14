@@ -51,6 +51,7 @@ for k in sys.argv[1].split("."):
     if d is None: break
     d = d.get(k) if isinstance(d, dict) else None
 if d is None: print("")
+elif isinstance(d, bool): print("true" if d else "false")
 elif isinstance(d, dict) and "x" in d: print(str(d["x"]) + "," + str(d["y"]))
 elif isinstance(d, list): print(",".join(map(str, d)))
 else: print(d)
@@ -185,10 +186,25 @@ trace_summary() { # tracefile
 trial() { # block V cut rep [park]
 	local block="$1" v="$2" cut="$3" rep="$4" park="${5:-none}"
 	reset_scene
-	bank_platform
 
-	local fz mv se body ev x y died pc tf tracer pk=""
+	# Preconditions are checked, not assumed. A trial that runs at an unbridged
+	# pit, or without the freeze that gets it through the patrol band, produces a
+	# TRIAL line indistinguishable from a valid one — and these lines are the
+	# dataset a decision gets made from. Label the failure in the log instead.
+	local fz
+	if ! bank_platform; then
+		printf 'TRIAL\t%s\tV=%s\tcut=%s\trep=%s\tSKIPPED — no bridge (summon-platform left platformCount=0)\n' \
+			"$block" "$v" "$cut" "$rep"
+		return
+	fi
 	fz="$(solve freeze-stars)"
+	if [[ "$(field "$fz" solved)" != true ]]; then
+		printf 'TRIAL\t%s\tV=%s\tcut=%s\trep=%s\tSKIPPED — freeze did not land (solved=%s)\n' \
+			"$block" "$v" "$cut" "$rep" "$(field "$fz" solved)"
+		return
+	fi
+
+	local mv se body ev x y died pc tf tracer pk=""
 	# Optional stage 1: run to the pit lip and stop, then jump from a standing
 	# start. This is the two-stage plan pilot-4's run B invented for itself
 	# (PILOT-2026-08-13.md, "The pair found the right plan"), so it is worth
@@ -253,6 +269,48 @@ for park in ${SWEEP_C_PARKS:-620 630 640}; do
 		trial C "$((park - 20))" 780 "cut$rep" "$park"
 	done
 done
+
+# --- summary ----------------------------------------------------------------
+# The header promises one, and hand-tallying 68 TRIAL lines is how the first
+# draft of the report shipped a Block C table that dropped a trial and miscounted
+# the no-jump row (adversarial review F1). Anything a reader might otherwise
+# count by eye gets counted here instead.
+echo
+echo "== summary =="
+python3 - "$LOG" <<-'PY'
+import re, sys, collections
+rows, skipped = [], 0
+for line in open(sys.argv[1]):
+    if not line.startswith("TRIAL"): continue
+    if "SKIPPED" in line: skipped += 1; continue
+    f = line.rstrip("\n").split("\t")
+    g = lambda k: (re.search(k + r"=(\S+)", line) or [None, None])[1]
+    m = re.search(r"apex=\((\d+),(\d+)\)", line)
+    rows.append({
+        "block": f[1], "V": g("V"), "cut": g("cut"), "park": g("park"),
+        "apexy": int(m.group(2)) if m else None,
+        "bridge": (lambda b: None if b in (None, "None") else int(b))(g("bridge")),
+        "verdict": next(t for t in f if t.startswith(("FELL", "LAND", "DIED", "GROUND", "WON", "AIRBORNE"))).split("@")[0],
+    })
+print("trials=%d skipped=%d" % (len(rows), skipped))
+for blk in sorted({r["block"] for r in rows}):
+    br = [r for r in rows if r["block"] == blk]
+    # A jump that never left the ground reads as an apex still at standing
+    # height — the driver reports `jumped` either way, so the event cannot be
+    # used for this and the trace has to be.
+    nojump = [r for r in br if r["apexy"] is not None and r["apexy"] >= 470]
+    onbridge = [r for r in br if r["bridge"] is not None]
+    print("  block %s: n=%d  %s" % (blk, len(br), dict(collections.Counter(r["verdict"] for r in br))))
+    print("    never left the ground: %d   touched the bridge: %d" % (len(nojump), len(onbridge)))
+    keys = collections.OrderedDict()
+    for r in br:
+        keys.setdefault((r["V"], r["cut"], r["park"]), []).append(r)
+    for (v, cut, park), rs in keys.items():
+        print("    V=%-4s cut=%-4s park=%-14s n=%d  %s  nojump=%d bridge=%d" % (
+            v, cut, park, len(rs), dict(collections.Counter(r["verdict"] for r in rs)),
+            sum(1 for r in rs if r["apexy"] is not None and r["apexy"] >= 470),
+            sum(1 for r in rs if r["bridge"] is not None)))
+PY
 
 echo
 echo "sweep complete — $LOG"

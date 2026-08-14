@@ -63,9 +63,10 @@ for decision briefs.
   Answer: **no level change is indicated.** No bare `jumpAtX` cleared the pit at
   any of 12 values (0 of 48), including 19 attempts that landed on the bridge and
   then ran off it; `jumpAtX` with an `untilX` over the bridge landed 6 for 6
-  across a 72px span of take-off points. The wall is feedback, not difficulty —
-  which is what Active items 4 and 6 now carry. See
-  `.pi/playtest/AIM-SWEEP-2026-08-13.md`.
+  across a 72px span of take-off points. The wall is feedback, not difficulty,
+  and it is entirely harness-side: both follow-ups are carried by the Active
+  "Jump-outcome telemetry on `/move`" item, and nothing here routes to
+  constellation. See `.pi/playtest/AIM-SWEEP-2026-08-13.md`.
 - **Co-op pilot 4** (2026-08-13, PR #23) — first live co-op since constellation's
   landing-triggered platform fix (its PR #40) and PR #21's telemetry. Confirmed
   the fix in live play: platforms stood 2m54s and 3m52s unlanded-on, measured
