@@ -262,25 +262,30 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
 	// a json-content-type body ("quotaId": "…") and, for text bodies, a
 	// double-stringified one (\"quotaId\": \"…\") — the captured pilot logs are
 	// all the second shape. Retryable ⇔ EVERY violation is a per-minute quota,
-	// no per-day violation rides along, no hard account marker
-	// (insufficient_quota, usage-limit text) appears — and, for anything other
-	// than a pure REQUEST-rate throttle, the server itself stated a retry delay.
-	// Request-rate windows clear on their own inside the rolling minute. A
-	// token-rate quota (…InputTokensPerModelPerMinute…) is ambiguous between two
-	// cases the quotaId cannot distinguish: a rolling window filled by *earlier*
-	// requests (clears; four captured pilot seats died fail-fast here with the
-	// server saying "Please retry in 39.2s") and a single request whose context
-	// alone exceeds the cap (can never succeed). The stated delay is the
-	// discriminator we act on: with one, the server is claiming a retry can
-	// succeed, and a wrong guess costs a bounded, abortable backoff; without
-	// one, fail fast as before.
+	// no per-day violation rides along, and no hard account marker
+	// (insufficient_quota, usage-limit text) appears. Request-rate windows clear
+	// on their own inside the rolling minute. A token-rate quota
+	// (…InputTokensPerModelPerMinute…) is ambiguous between two cases nothing in
+	// the error body can distinguish: a rolling window filled by *earlier*
+	// requests (clears on its own; every captured pilot failure — four seats
+	// killed fail-fast with the server saying "Please retry in 39.2s" — is this
+	// case) and a single request whose context alone exceeds the cap (can never
+	// succeed). A stated RetryInfo delay does NOT discriminate: Google attaches
+	// one even to per-day exhaustion (the captured per-day fixture states 17s
+	// against a cap that clears at midnight). So both token-rate cases retry:
+	// the wrong guess on a truly oversized request costs a bounded, abortable
+	// backoff (maxRetries × ≤ MAX_SERVER_RETRY_DELAY_MS), where the old
+	// fail-fast killed the whole session on the common rolling-window case.
 	const quotaIds = [...errorMessage.matchAll(/\\?"quotaId\\?":\s*\\?"([^"\\]+)/g)].map((m) => m[1]);
 	if (quotaIds.length > 0) {
 		if (NON_RETRYABLE_ACCOUNT_LIMIT_SANS_BILLING_PATTERN.test(errorMessage)) return false;
 		if (/PerDay/.test(errorMessage)) return false;
-		if (!quotaIds.every((id) => /PerMinute/.test(id))) return false;
-		if (quotaIds.every((id) => /GenerateRequests\w*PerMinute/.test(id))) return true;
-		return extractServerRetryDelayMs(errorMessage) !== undefined;
+		// Deliberately any per-minute family — request-rate
+		// (GenerateRequests…PerMinute…) and token-rate
+		// (…InputTokensPerModelPerMinute…) ids both match, as will future
+		// per-minute quota families; the per-day and account guards above are
+		// what keep this from over-accepting.
+		return quotaIds.every((id) => /PerMinute/.test(id));
 	}
 	// Prose-only fallback (no structured quotaId): same precedence, hard
 	// account/billing markers and per-day mentions outrank the per-minute hint.
@@ -296,8 +301,8 @@ export function isRetryableAssistantError(message: AssistantMessage): boolean {
  *
  * Sized off what a *legitimate* delay can be, not off a round number. The
  * extractor only ever runs on errors {@link isRetryableAssistantError} already
- * accepted, which for Google means a per-minute quota (request-rate, or
- * token-rate with a stated delay) — windows that by definition close inside a
+ * accepted, which for Google means a per-minute quota (request-rate or
+ * token-rate) — windows that by definition close inside a
  * rolling 60s — so 60s plus
  * {@link SERVER_RETRY_DELAY_PAD_MS} is the longest honest value. A 60s ceiling
  * left no room for it: a captured pilot 429 stated 58.758s, which pads to
