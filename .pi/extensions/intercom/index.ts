@@ -116,8 +116,8 @@ function tick(pi: ExtensionAPI, state: IntercomState): void {
 					),
 					display: true,
 				},
-				// steer + triggerTurn: an idle session wakes up and answers; a busy one sees
-				// the message before its next LLM call instead of after the whole turn.
+				// steer + triggerTurn: this send only ever runs while the agent is idle (the
+				// mid-run guard above returned), so it wakes the session into a fresh turn.
 				{ deliverAs: "steer", triggerTurn: true },
 			);
 			// Marked seen only after the send call returned: a synchronous failure above
