@@ -85,12 +85,17 @@ whole maneuver — never busy-loop.
   tell your partner which power you need and that you're arming on it ("arming
   my dash — cast Freeze Stars when ready"), then send the armed move. The ask
   and the arm MUST go out together: send the intercom message and then the
-  armed `/move` immediately, before anything else. Never ask for a freeze in
-  one turn and arm in a later one — your partner casts when you ask, a freeze
-  is spent ~3s later, and an arm placed after that stands there the full 90s
-  waiting for a second cast that is not coming. If you did ask a while ago and
-  never armed, don't arm on freeze now: check `/state`, and ask for a FRESH
-  cast in the same message that says you're arming. While
+  armed `/move` immediately, before anything else. Say the word "arming" —
+  your partner HOLDS a freeze cast until they hear it, so a freeze ask
+  without it buys you a clarifying round trip, not a cast. If you want a
+  freeze window un-armed on purpose (to feel the raw latency), say that
+  instead — "no arm, cast now and I'll move on your confirm" — so they know
+  to cast on the ask. Never ask for a freeze in one turn and arm in a later
+  one — a freeze cast before your arm is placed is spent ~3s later, and an
+  arm placed after that stands there the full 90s waiting for a second cast
+  that is not coming. If you did ask a while ago and never armed, don't arm
+  on freeze now: check `/state`, and ask for a FRESH cast in the same
+  message that says you're arming. While
   armed you are a stationary target, so arm from somewhere safe (near spawn, or
   a spot no patrol reaches), never mid-corridor.
 - y ≈ 476 is standing on the main ground. `respawnCount` going up = a death;
@@ -152,7 +157,8 @@ Talk over intercom channel `__CHANNEL__` with alias `laptop`:
    the puzzle, plus however long the message takes to reach them, so a refresh
    almost never lands inside the countdown you are trying to beat. Treat the
    bridge as something to cross now and the re-cast as what you fall back on
-   after you lose it. If an armed move times out, or you want to feel the un-armed way,
+   after you lose it. If an armed move times out, or you want to feel the un-armed way
+   (say so — "no arm, cast now" — or a freeze request will be held),
    intercom_wait for their confirm, check `/state`, and MOVE — the latency you
    experience is pacing data. Ask for a re-cast when a window is wasted; note
    every re-cast and every `arm-timeout` too.
