@@ -65,13 +65,10 @@ for decision briefs.
   `lastStoodAt` (429, x 828–836 off a bridge spanning 722–818) and 36 report
   ground height (476) — the "landed, then walked off the far edge" class that
   used to be indistinguishable from a plain pit death, with every bridge row
-  trace-confirmed. The detector under-reports rather than inventing: 9 deaths
-  report nothing (block C's stage-two moves cross the fall edge inside the first
-  poll, so no rest is observed in that move) and 1 of 15 bridge rests was scored
-  as the earlier ground rest. Adversarial review ran three rounds — 3 should-fix
-  and 6 nice-to-have findings, all fixed and verified; the third round exists
-  because round 2 caught the verification numbers having been measured on the
-  pre-fix driver. See `.pi/playtest/DESIGN.md`.
+  trace-confirmed. Nine deaths report nothing: a rest needs three consecutive
+  samples, and block C's stage-two moves jump on their first one. `DESIGN.md`
+  carries that and the rest of the field's limits. Adversarial review ran to the
+  three-round cap; its disposition is on PR #25. See `.pi/playtest/DESIGN.md`.
 - **Planet-1 aim sweep** (2026-08-13) — the experiment pilot 4 owed, run as a
   scripted 68-trial probe (`aim-sweep.sh`) rather than another two-seat pilot,
   because a free-tier seat dies inside 5.5 minutes and this needed ~70 attempts.

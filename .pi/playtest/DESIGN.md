@@ -117,24 +117,34 @@ exactly, and a first sample with no predecessor to compare against records
 nothing — because a 1px slack admits the first sample of a fall, which covers
 only ~1.6px in 60ms.
 
-Both halves being strict makes the detector **under-report rather than invent**,
-which is the right direction for a field a seat reasons from. Measured over the
-68-trial sweep at this build (`logs/20260813-210539-aim-sweep.log`): of 59
-deaths, 14 named the bridge (429) and 36 the ground (476) — only those two
-values, none of the off-by-one readings a 1px slack produced — every one of the
-14 confirmed by the trace; 1 of 15 real bridge rests was scored as the earlier
-ground rest, and 9 deaths reported nothing.
+Measured over the 68-trial sweep at this build
+(`logs/20260813-210539-aim-sweep.log`): of 59 deaths, 14 named the bridge (429)
+and 36 the ground (476) — only those two values, none of the off-by-one readings
+a 1px slack produced — and 9 named nothing.
 
-Three limits, stated so reports carry them rather than discover them. It is the
-last *sampled* rest, so its `x` can be up to one poll (~14px) along the surface
-from where the astronaut actually left it — the same bias `diedAt` has, and the
-`y` is the part the bridge-vs-ground question turns on. It is scoped to **this
-move**: the nine silent deaths above are all two-stage maneuvers whose second
-move begins parked at the lip and crosses the fall edge inside the first poll, so
-the rest that matters happened in the previous call. And it is absent when the
-driver never caught a rest at all, including every `respawned-while-armed`
-death: an armed astronaut stands still, so `diedAt` is already the spot it stood
-in.
+Four limits, stated so reports carry them rather than discover them.
+
+- It is the last *sampled* rest, so its `x` can be up to one poll (~14px) along
+  the surface from where the astronaut actually left it — the same bias `diedAt`
+  has, and the `y` is the part the bridge-vs-ground question turns on.
+- **A rest needs three consecutive samples** (a matching pair plus the one before
+  it), so a move whose astronaut leaves the ground inside its first two — by
+  jumping or by running off an edge — reports nothing at all. That is every one
+  of the nine silent deaths: block C's stage-two moves start parked at the lip
+  with a `jumpAtX` 20px *behind* them, so the press fires on sample one and the
+  window never closes. The rest that matters happened in the previous call, and
+  the field is scoped to this one.
+- When no rest is caught in this move, the answer can also be **stale rather than
+  absent**: a move that rested early, then landed somewhere new too briefly to
+  register, reports the earlier surface. The sweep has one trial where the driver
+  and the trace disagree this way (`A V=606 rep=4`: driver `{608, 476}`, trace a
+  bridge rest at 812) — though the trace is the likelier error there, since the
+  same aim's other three repetitions show no bridge contact at an identical apex
+  and the trace's bridge test is a 28px band sampled against a ~26px/sample
+  descent. One disagreement in 15 either way; neither side is proven.
+- It is absent entirely on a `respawned-while-armed` death: the arm wait tracks
+  no surfaces, and an armed astronaut stands still, so `diedAt` is already the
+  spot it stood in.
 
 **Jump outcomes (`jump`) — a verdict, not a keypress.** A `jumpAtX` the driver
 actually pressed adds `jump: {tookOff, pressedAt: {x, y}, apexY}`, and the
