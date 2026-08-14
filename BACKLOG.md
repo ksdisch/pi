@@ -35,8 +35,9 @@ for decision briefs.
    0.65s of the thaw. Carrying e.g. `freezeMsLeft` lets a seat tell a fresh cast
    from a lapsing one. Observability, not assistance — a human watching the
    screen already sees it. Pilot 5 made the platform half systematic (its
-   finding 4): with platforms persisting indefinitely, all five stale-platform
-   arms across both runs fired in 60–64ms with no freeze up and all five died —
+   finding 4): with platforms persisting indefinitely, all five arms placed
+   against an already-standing platform fired in 60–64ms with no freeze up
+   across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
 6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
@@ -58,9 +59,50 @@ for decision briefs.
    is simply absent. Candidate: a light idle sampler in the laptop driver that
    keeps `lastDeath` current while no move runs — observes only, honesty split
    untouched.
+9. **Scripted repro for the intercom delivery anomalies — now with a
+   deterministic signature** — pilot 5 finding 8, sharpened decisively by
+   pilot 6 finding 3 (unsequenced; appended pending grooming). Pilot 6
+   caught the same failure twice with one exact shape: **a message created
+   ~1s before an `intercom_wait` begins is invisible to that wait** — the
+   wait runs deaf to its full timeout and the message is delivered only as
+   the wait ends (93.9s late in run A, out of order behind a newer message;
+   61s late in run B), while a control message created 43s *into* a wait
+   delivered in 0.2s. One instance manufactured a 90s `arm-timeout` with
+   both seats following protocol. Repro recipe is now scriptable: send,
+   sleep ~1s, `intercom_wait`, measure. Pilot 5's original 20.8s idle-seat
+   observation (no wait running) recurred as an 18.6s delivery in pilot 6
+   and still wants the same harness; deliveries into a seat holding a 90s
+   armed `/move` land only when the curl returns, which is turn-boundary
+   behaviour, not a bug. Likely locus: the wait-start cursor/seen-marking in
+   `.pi/extensions/intercom/`.
+10. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+    finding F8 (unsequenced; appended pending grooming). The handoff extension
+    injected run A's phone-session shutdown digest into run B's laptop seat at
+    startup: cross-run contamination that cost the seat its first turn and
+    weakens any cross-run independence claim a report makes. Decide how seat
+    sessions opt out (e.g. `run-pilot.sh` launching seats with the handoff
+    extension disabled or env-gated) and implement it.
 
 ## Shipped
 
+- **Co-op pilot 6** (2026-08-14) — the release experiment, run twice with
+  finding 7's `lastStoodAt` teaching and F6's conditional freeze arm in the
+  prompts. Half the answer landed: the misread is fixed on captured deaths
+  (three fully-captured overflight deaths in run B, three correct "took off
+  but never landed" readings, zero "cleared the pit" — while run A still
+  misread the one death the driver never recorded, item 8's class), and the
+  release is still unfound — the seat varied its aim and interrogated
+  platform placement across three `tookOff: true` jumps (pressed x=640–652,
+  apexY 362, `diedAt` x=892–896) and never suspected the held input; run A
+  issued `untilX: 800` — inside the bridge span — and 720 on walk-ins only,
+  and no seat has ever paired a bridge-band `untilX` with a `jumpAtX` in six
+  pilots (report finding 2 proposes the missing technique line). Run B lived 9m05s — the longest of any pilot —
+  because two 90s arm-timeouts and a 63s hold were token-free quota relief.
+  Major harness catch: the intercom wait-start boundary bug (item 9's
+  sharpening) manufactured one of those timeouts with both seats behaving
+  correctly. The handoff-digest injection (item 10) reproduced in all four
+  seats; 2 more between-move deaths went invisible (item 8's class); no seat
+  wrote a report in either run. See `.pi/playtest/PILOT-2026-08-14-run6.md`.
 - **Co-op pilot 5** (2026-08-13) — first live co-op with the jump-outcome
   telemetry (PR #25) in the seats' hands, and first under pilot 4 finding 4's
   arm-ordering protocol, folded into the seat prompts for this run. Both
@@ -74,9 +116,10 @@ for decision briefs.
   and the seat still misread it as "Cleared the pit" (report finding 7). The
   protocol fix measured clean: 18/18 arms fired, zero `arm-timeout`s, zero
   deadlocks (pilot 4: three and two ~90s). Costs surfaced: 3 of 19 deaths
-  completed between moves and are invisible to the death telemetry; five
-  stale-platform arms fired instantly and died (folded into the trigger-life
-  item); and the deadlock-free pace hit the free-tier 250k input-tokens/min
+  completed between moves and are invisible to the death telemetry; five arms
+  placed against an already-standing platform fired instantly and died (folded
+  into the trigger-life item); and the deadlock-free pace hit the free-tier
+  250k input-tokens/min
   cap sooner — 3m27s and 1m54s of play. See
   `.pi/playtest/PILOT-2026-08-13-run5.md`.
 - **Jump-outcome telemetry on `/move`** (2026-08-13, PR #25) — the aim sweep's

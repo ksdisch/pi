@@ -40,6 +40,11 @@ whole maneuver — never busy-loop.
   `diedAt` it is sampled, so its `x` can be ~15px along the surface from the real
   edge; the `y` is the part to trust. If a death has NO `lastStoodAt`, the driver
   never caught you at rest during that move — say so rather than guessing.
+  Never read distance as progress: if you died past a gap but `lastStoodAt` is
+  still at or before where you took off, you never landed on anything — you
+  overflew the far side or fell in. Only a `lastStoodAt` past the gap proves
+  you actually got across; a raised-height `lastStoodAt` means you landed on
+  something IN the gap and then left it — halfway, not across.
   AND if you asked for `jumpAtX`: `jump: {tookOff, pressedAt, apexY}`.
   `tookOff: false` (event "jump-ignored") means the driver never saw you leave
   the ground. Almost always that is because you were already off the ground when
@@ -93,8 +98,14 @@ whole maneuver — never busy-loop.
   to cast on the ask. Never ask for a freeze in one turn and arm in a later
   one — a freeze cast before your arm is placed is spent ~3s later, and an
   arm placed after that stands there the full 90s waiting for a second cast
-  that is not coming. If you did ask a while ago and never armed, don't arm
-  on freeze now: check `/state`, and ask for a FRESH cast in the same
+  that is not coming. If you did ask a while ago and never armed, check
+  `/state` first. If `enemyFrozen` is already true you MAY arm on it — the
+  trigger fires instantly — but the window is already burning and you cannot
+  see how much is left, so keep it bounded and audible: set a short
+  `arm.timeoutMs` (a few thousand ms, never the 90s default) and say you're
+  arming on the standing freeze in the same turn, so a spent window costs
+  seconds and your partner knows to recast. If `enemyFrozen` is false, don't
+  arm on freeze; ask for a FRESH cast in the same
   message that says you're arming. While
   armed you are a stationary target, so arm from somewhere safe (near spawn, or
   a spot no patrol reaches), never mid-corridor.
