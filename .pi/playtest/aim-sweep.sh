@@ -309,10 +309,20 @@ for blk in sorted({r["block"] for r in rows}):
     # draft, one table over.
     bonk = [r for r in br if r["apexy"] is not None and 380 <= r["apexy"] < 470]
     clean = [r for r in br if r["apexy"] is not None and r["apexy"] < 380]
-    span = lambda rs: ("%s-%s" % (min(x["takeoff"] for x in rs), max(x["takeoff"] for x in rs))
-                       if [x for x in rs if x["takeoff"] is not None] else "n/a")
+    # Filter INSIDE the lambda, not just guard on "at least one is set": min()
+    # over a list mixing int and None raises TypeError, which would abort the
+    # whole summary — including the per-cell table below — on one bad trace.
+    def span(rs):
+        vs = [x["takeoff"] for x in rs if x["takeoff"] is not None]
+        return "%s-%s" % (min(vs), max(vs)) if vs else "n/a"
     print("  block %s: n=%d  %s" % (blk, len(br), dict(collections.Counter(r["verdict"] for r in br))))
     print("    never left the ground: %-3d ceiling-bonked: %-3d clean jumps: %d" % (len(nojump), len(bonk), len(clean)))
+    # A trial whose trace came back empty has no apex and so joins none of the
+    # three classes above. Say so out loud — silently absorbing it is exactly the
+    # miscount this summary exists to prevent.
+    unclassified = len(br) - len(nojump) - len(bonk) - len(clean)
+    if unclassified:
+        print("    UNCLASSIFIED (no trace): %d — the three classes above do not sum to n" % unclassified)
     print("      bonked take-offs %s (apexY %s)" % (
         span(bonk), sorted({r["apexy"] for r in bonk}) or "-") if bonk else "      bonked: none")
     cb = [r for r in clean if r["bridge"] is not None]
