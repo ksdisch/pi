@@ -64,29 +64,7 @@ for decision briefs.
    with a celebratory screenshot — sits on an invisible death, while all 26
    of pilot 7's captured deaths were read correctly. The sampler is what
    makes the misread checkable.
-9. **Scripted repro for the intercom delivery anomalies — now with a
-   deterministic signature** — pilot 5 finding 8, sharpened decisively by
-   pilot 6 finding 3 (unsequenced; appended pending grooming). Pilot 6
-   caught the same failure twice with one exact shape: **a message created
-   ~1s before an `intercom_wait` begins is invisible to that wait** — the
-   wait runs deaf to its full timeout and the message is delivered only as
-   the wait ends (93.9s late in run A, out of order behind a newer message;
-   61s late in run B), while a control message created ~25s *into* a wait
-   delivered in 0.2s. One instance manufactured a 90s `arm-timeout` with
-   both seats following protocol. Repro recipe is now scriptable: send,
-   sleep ~1s, `intercom_wait`, measure. Pilot 5's original 20.8s idle-seat
-   observation (no wait running) recurred as an 18.6s delivery in pilot 6
-   and still wants the same harness; deliveries into a seat holding a 90s
-   armed `/move` land only when the curl returns, which is turn-boundary
-   behaviour, not a bug. Likely locus: the wait-start cursor/seen-marking in
-   `.pi/extensions/intercom/`. *Pilot 7 update:* ~10 more instances; the
-   mechanism sharpened to "any message the watcher tick claims while the
-   recipient is mid-turn is invisible to a wait that starts next" (the tick
-   marks it seen at `index.ts:108` and queues a steer delivery that cannot
-   surface until after the wait — pre-wait gaps of 0.4–3.5s all hit). It
-   manufactured 3 of pilot 7 run B's 4 arm-timeouts and held 8 of run A's
-   12 arms 60–84s: the dominant coordination cost of live pilots.
-10. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+9. **Stop handoff-digest injection into playtest seats** — pilot 5, review
     finding F8 (unsequenced; appended pending grooming). The handoff extension
     injected run A's phone-session shutdown digest into run B's laptop seat at
     startup: cross-run contamination that cost the seat its first turn and
@@ -96,6 +74,24 @@ for decision briefs.
 
 ## Shipped
 
+- **Intercom wait-start boundary bug: reproduced and fixed** (2026-08-14) —
+  closes the former Active item 9 (scripted repro for the delivery
+  anomalies), through the fix rather than just the repro. Mechanism
+  confirmed: the watcher tick claimed messages mid-run — marked seen at the
+  moment of `pi.sendMessage(deliverAs: "steer")`, whose delivery cannot
+  surface until the run's next LLM call — so an `intercom_wait` in the same
+  run polled the shared seen-set deaf for its whole timeout (12+ live
+  instances across pilots 6–7: 60–94s of deafness, manufactured
+  `arm-timeout`s, out-of-order arrivals). Fix: the tick stands down while
+  `agent_start` → `agent_end`/`agent_settled` is open, leaving messages
+  unclaimed for any wait to return instantly; the idle-wake path is
+  unchanged. Repro is `test/index.test.ts` in the extension — a fake
+  ExtensionAPI + fake timers test verified to fail on the pre-fix tick and
+  pass on the fix (29/29 suite green). Trade documented in the extension's
+  DESIGN.md: a busy session hears a message at its next wait or at run end
+  + ≤1 poll, no longer before its next LLM call. Pilot 5's separate 20.8s
+  idle-seat observation is NOT closed by this (no wait was running there);
+  it stays folded into future pilot observation.
 - **Co-op pilot 7** (2026-08-14) — the pairing experiment, run twice with the
   `untilX` flight-semantics technique line in the laptop prompt. The pairing
   happened: run B issued `jumpAtX` + `untilX` seven times, including

@@ -72,9 +72,24 @@ not couple to it.
   exit open, and torn down on `session_shutdown` so reload/new-session cannot leak
   live timers bound to dead runtimes) scans every joined channel and injects anything
   new via `pi.sendMessage(..., { deliverAs: "steer", triggerTurn: true })`: an idle
-  session wakes up and responds; a busy one sees the message before its next LLM
-  call. Delivered names are marked seen only *after* the send call returns, so a
-  synchronous send failure is retried next tick. `pi.sendMessage` is fire-and-forget
+  session wakes up and responds. Delivered names are marked seen only *after* the
+  send call returns, so a synchronous send failure is retried next tick.
+- **The watcher stands down while an agent run is in progress**
+  (`agent_start` → `agent_end`/`agent_settled`). Claiming mid-run was the wait-start
+  boundary bug: a steer delivery queued mid-run cannot surface until the run's next
+  LLM call, but the claim marks the message seen — so an `intercom_wait` issued in
+  that same run polled the shared seen-set and ran its whole timeout deaf to a
+  message that had already arrived, which then surfaced late and out of order.
+  Pilots 6–7 measured 12+ live instances (60–94 s of deafness each, and manufactured
+  `arm-timeout`s; see `.pi/playtest/PILOT-2026-08-14-run{6,7}.md`). The stand-down is
+  deliberately **global across channels**, not scoped per channel: the race is a claim
+  landing before a wait *exists*, so no per-channel prediction of future waits can
+  close it, and a global guard has no races anywhere. The trade: mid-run steering is
+  gone entirely — while a run is open, a message is heard only by an `intercom_wait`
+  on its own channel (instantly); a message on any *other* joined channel waits
+  silently until run end plus at most one poll. For an extension whose prompts lean
+  on `intercom_wait` as the primary listening posture, a reliable wait is worth
+  strictly more than mid-run steering. `pi.sendMessage` is fire-and-forget
   inside pi, so an **asynchronous** delivery failure is unobservable here and would
   lose those messages — accepted for v1: it requires pi's own message queue to fail,
   and the transcript on disk still holds the message for manual recovery.
@@ -133,8 +148,10 @@ conversation. Do not join channels in untrusted working directories.
 - `store.ts` and `format.ts` have no pi imports and are covered by unit tests
   (round-trip, seen-set semantics including late out-of-order arrivals, corrupt-file
   skip, clear, git-exclude idempotence, rendered text).
-- `index.ts` (tool/command/watcher wiring) is exercised interactively; it contains no
-  logic beyond wiring that isn't already under test. Same trade the handoff
-  extension's DESIGN.md documents for its `index.ts`.
+- `index.ts` (tool/command/watcher wiring) is covered by `test/index.test.ts`, which
+  drives the real entry point through a fake ExtensionAPI with fake timers: the
+  wait-start boundary repro (fails on the pre-fix tick, pins the fixed behaviour),
+  the idle-wake path (steer + triggerTurn, once, no re-delivery), the
+  `agent_settled` fallback, and delivery into an already-running wait.
 - CI: `.github/workflows/intercom-ext.yml`, a sibling of `handoff-ext.yml`, runs the
   unit tests and a typecheck against pi source on every push/PR to main.

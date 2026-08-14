@@ -54,6 +54,18 @@ interface IntercomState {
 	seq: number;
 	/** Last watcher failure, surfaced via `/intercom status` — a watcher must never throw. */
 	watchError?: string;
+	/**
+	 * True while an agent loop is running (`agent_start` → `agent_end`/`agent_settled`).
+	 * The tick must not claim messages then: a steer delivery queued mid-run cannot
+	 * surface until the run's next LLM call, but marking the message seen blinds an
+	 * `intercom_wait` issued in that same run — the wait polls the shared `seen` set and
+	 * runs its whole timeout deaf to a message that has factually arrived. Twelve-plus
+	 * live instances of exactly that (60–94s of deafness each, manufactured
+	 * `arm-timeout`s) are recorded in `.pi/playtest/PILOT-2026-08-14-run{6,7}.md`.
+	 * Left unclaimed, the message is picked up instantly by any wait, or by the first
+	 * tick after the run ends (≤ one poll interval) on the unchanged idle-wake path.
+	 */
+	agentActive: boolean;
 }
 
 function normalizeChannel(raw: string): string | undefined {
@@ -79,6 +91,13 @@ function join(state: IntercomState, channel: string, alias?: string): ChannelSta
 /** One watcher pass over every joined channel. Failures land in `watchError`, never throw. */
 function tick(pi: ExtensionAPI, state: IntercomState): void {
 	if (!state.cwd || !state.sessionId) return;
+	// Mid-run the tick stands down on EVERY joined channel — see `agentActive` on
+	// IntercomState. Global on purpose: the race is a claim landing before a wait
+	// exists, so scoping by channel would need to predict future waits. The cost is
+	// that mid-run a message is heard only by a wait on its own channel; any other
+	// joined channel stays silent until run end (+ ≤ one poll). The benefit is that a
+	// wait can never again run deaf to an already-arrived message, on any channel.
+	if (state.agentActive) return;
 	const errors: string[] = [];
 	for (const [channel, entry] of state.joined) {
 		if (entry.waiting) continue;
@@ -97,8 +116,8 @@ function tick(pi: ExtensionAPI, state: IntercomState): void {
 					),
 					display: true,
 				},
-				// steer + triggerTurn: an idle session wakes up and answers; a busy one sees
-				// the message before its next LLM call instead of after the whole turn.
+				// steer + triggerTurn: this send only ever runs while the agent is idle (the
+				// mid-run guard above returned), so it wakes the session into a fresh turn.
 				{ deliverAs: "steer", triggerTurn: true },
 			);
 			// Marked seen only after the send call returned: a synchronous failure above
@@ -117,6 +136,18 @@ function tick(pi: ExtensionAPI, state: IntercomState): void {
 
 function registerWatcher(pi: ExtensionAPI, state: IntercomState): void {
 	let timer: ReturnType<typeof setInterval> | undefined;
+	pi.on("agent_start", () => {
+		state.agentActive = true;
+	});
+	// Both end events clear the flag: `agent_end` fires when the loop ends, and
+	// `agent_settled` after retries/compaction/continuations settle — either alone could
+	// be missed on an unusual path, and a stuck-true flag would mute the watcher forever.
+	pi.on("agent_end", () => {
+		state.agentActive = false;
+	});
+	pi.on("agent_settled", () => {
+		state.agentActive = false;
+	});
 	pi.on("session_start", (_event, ctx) => {
 		// Every reason, including resume/fork: whatever session is live now is the sender
 		// identity and cwd the watcher must use.
@@ -344,7 +375,7 @@ function registerIntercomRenderer(pi: ExtensionAPI): void {
 }
 
 export default function (pi: ExtensionAPI) {
-	const state: IntercomState = { joined: new Map(), seq: 0 };
+	const state: IntercomState = { joined: new Map(), seq: 0, agentActive: false };
 	registerWatcher(pi, state);
 	registerIntercomRenderer(pi);
 	registerTools(pi, state);
