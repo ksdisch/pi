@@ -98,11 +98,12 @@ for decision briefs.
 
 - **Co-op pilot 7** (2026-08-14) — the pairing experiment, run twice with the
   `untilX` flight-semantics technique line in the laptop prompt. The pairing
-  happened: run B issued `jumpAtX` + `untilX` six times, including
-  `untilX: 720`, which cut its move mid-air exactly as taught — and the
-  landing still didn't, because `jumpAtX: 645` pressed at x=652–656 (at or
-  past the 656 fall edge) in five of six trials and the jump was refused;
-  the one take-off carried `untilX: 1150` and overflew (captured, read
+  happened: run B issued `jumpAtX` + `untilX` seven times, including
+  `untilX: 720`, whose cut fired mid-air exactly as a terminator should (on
+  a fall — the press was refused) — and the landing still didn't: of the
+  five paired moves that reached the press, four were refused
+  (`jumpAtX: 645` pressed at 656 three times and 652 once) and the one
+  take-off carried `untilX: 1150` and overflew (captured, read
   correctly). Run A's seat never pressed jump once — it spent 15m06s (the
   longest seat life ever) trying to walk onto the platform. Report finding 2
   proposes the aim-margin line ("set `jumpAtX` at least 20px before the
