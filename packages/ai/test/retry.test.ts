@@ -123,32 +123,57 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
-	it("keeps a real captured token-rate per-minute quota non-retryable (context cannot shrink)", () => {
+	it("retries a real captured token-rate per-minute throttle", () => {
+		// Pilots 3-7: four seats died fail-fast on exactly this body shape — a
+		// rolling window filled by earlier requests, which clears on its own.
+		// Nothing in the body distinguishes that from a request whose context
+		// alone exceeds the cap (Google states RetryInfo even on per-day
+		// exhaustion), so both retry: the wrong guess costs a bounded, abortable
+		// backoff where the fail-fast killed whole sessions on the common case.
 		expect(
 			isRetryableAssistantError(
 				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokensRaw }),
 			),
-		).toBe(false);
+		).toBe(true);
 	});
 
-	it("requires EVERY structured violation to be a request-rate per-minute quota", () => {
+	it("retries a token-rate per-minute quota even without a stated delay", () => {
+		// The delay is deliberately NOT the discriminator — see the classifier
+		// comment; a no-delay body is unattested in any captured log anyway.
+		const errorMessage =
+			'429 quota exceeded, please check your plan and billing details. violations: [{"quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"}]';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(true);
+	});
+
+	it("lets a per-day violation outrank a token-rate per-minute quota with a stated delay", () => {
+		const errorMessage =
+			'429 quota exceeded. violations: [{"quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"}, {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}] Please retry in 20s.';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
+	it("retries mixed request-rate and token-rate per-minute violations", () => {
 		const body = (ids: string[]) =>
 			`429 quota exceeded, please check your plan and billing details. violations: [${ids
 				.map((id) => `{"quotaId": "${id}"}`)
 				.join(", ")}]`;
 		const requests = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier";
 		const tokens = "GenerateContentInputTokensPerModelPerMinute-FreeTier";
-		for (const ids of [
-			[requests, tokens],
-			[tokens, requests],
-		]) {
+		for (const ids of [[requests, tokens], [tokens, requests], [requests], [tokens]]) {
 			expect(
 				isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body(ids) })),
-			).toBe(false);
+			).toBe(true);
 		}
+		// A non-per-minute violation in the set fails the every() gate itself —
+		// PerHour dodges both the /PerDay/ guard and the per-minute match, so this
+		// assertion is the one that trips if the gate is ever loosened.
 		expect(
-			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body([requests]) })),
-		).toBe(true);
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: body([requests, "GenerateContentInputTokensPerModelPerHour-FreeTier"]),
+				}),
+			),
+		).toBe(false);
 	});
 
 	it("lets a hard account-limit marker outrank a structured per-minute quotaId", () => {

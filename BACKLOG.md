@@ -40,15 +40,10 @@ for decision briefs.
    across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
-6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
-   killed a seat mid-run (pilot 3, finding 6; both pilot-4 runs died the same
-   way, at ~3.5 and ~5.5 min); candidate change to
-   `packages/ai/src/utils/retry.ts`. Grows the rebase-sensitive surface;
-   consider upstreaming instead.
-7. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+6. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
-8. **Capture deaths that complete between moves** — pilot 5 finding 3
+7. **Capture deaths that complete between moves** — pilot 5 finding 3
    (unsequenced; appended at the end pending grooming). A `/move` reply can
    only report a death inside the move, so a fall that outlives a `reached-x`
    or a freeze that lapses while parked leaves `respawnCount` advanced with no
@@ -64,7 +59,7 @@ for decision briefs.
    with a celebratory screenshot — sits on an invisible death, while all 26
    of pilot 7's captured deaths were read correctly. The sampler is what
    makes the misread checkable.
-9. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+8. **Stop handoff-digest injection into playtest seats** — pilot 5, review
     finding F8 (unsequenced; appended pending grooming). The handoff extension
     injected run A's phone-session shutdown digest into run B's laptop seat at
     startup: cross-run contamination that cost the seat its first turn and
@@ -74,6 +69,22 @@ for decision briefs.
 
 ## Shipped
 
+- **Token-rate 429 retryability** (2026-08-14) — closes the former Active item
+  6. A `GenerateContent…InputTokensPerModelPerMinute` 429 is now retryable in
+  `packages/ai/src/utils/retry.ts` (absent per-day violations or account
+  markers, which stay terminal over everything). The body cannot distinguish a
+  rolling window filled by earlier requests (the shape that killed four pilot
+  seats fail-fast, at 39.2s/49.5s stated delays) from a request whose context
+  alone exceeds the cap — the review caught that Google attaches `RetryInfo`
+  even to per-day exhaustion, so a stated delay discriminates nothing — and
+  every captured failure is the rolling-window case, so both retry: the wrong
+  guess costs a bounded, abortable backoff where the fail-fast killed whole
+  sessions. Request-rate per-minute quotas stay retryable as before; the 90s
+  server-delay clamp reasoning still holds (token windows are also rolling
+  60s). Tests pin the flipped captured fixture, the no-delay body,
+  per-day-outranks, and mixed violations. Rebase surface unchanged: only
+  files already on the fork's rebase-sensitive list were touched, and per
+  that list's precedent no upstream changelog entry was added.
 - **Intercom wait-start boundary bug: reproduced and fixed** (2026-08-14) —
   closes the former Active item 9 (scripted repro for the delivery
   anomalies), through the fix rather than just the repro. Mechanism
@@ -106,7 +117,7 @@ for decision briefs.
   edge") that plus the pairing should land. The intercom wait-start bug set
   the pilot's pace: ~10 new instances, 3 of run B's 4 arm-timeouts
   manufactured, 8 of run A's arms held 60–84s (item 9 — fix next). 8 more
-  invisible deaths carried all 3 of the pilot's misreads (item 8's case,
+  invisible deaths carried all 3 of the pilot's misreads (the between-move-deaths item's case,
   now airtight); digest injection proved per-seat (item 10). No seat wrote
   a report in either run. See `.pi/playtest/PILOT-2026-08-14-run7.md`.
 - **Co-op pilot 6** (2026-08-14) — the release experiment, run twice with
@@ -114,7 +125,7 @@ for decision briefs.
   prompts. Half the answer landed: the misread is fixed on captured deaths
   (three fully-captured overflight deaths in run B, three correct "took off
   but never landed" readings, zero "cleared the pit" — while run A still
-  misread the one death the driver never recorded, item 8's class), and the
+  misread the one death the driver never recorded, the between-move-deaths item's class), and the
   release is still unfound — the seat varied its aim and interrogated
   platform placement across three `tookOff: true` jumps (pressed x=640–652,
   apexY 362, `diedAt` x=892–896) and never suspected the held input; run A
@@ -126,7 +137,7 @@ for decision briefs.
   Major harness catch: the intercom wait-start boundary bug (item 9's
   sharpening) manufactured one of those timeouts with both seats behaving
   correctly. The handoff-digest injection (item 10) reproduced in all four
-  seats; 2 more between-move deaths went invisible (item 8's class); no seat
+  seats; 2 more between-move deaths went invisible (the between-move-deaths item's class); no seat
   wrote a report in either run. See `.pi/playtest/PILOT-2026-08-14-run6.md`.
 - **Co-op pilot 5** (2026-08-13) — first live co-op with the jump-outcome
   telemetry (PR #25) in the seats' hands, and first under pilot 4 finding 4's
