@@ -51,7 +51,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
 | `POST /state` | Compact `getState()` snapshot. Runs off the serial command chain — it only reads, and the phone's world glance asks for it while this seat may be holding a 90s armed move |
-| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `won`, `reached-x`, `time-up`). A death adds `diedAt` (see "Death sites" below). Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
+| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `jump-ignored`, `won`, `reached-x`, `time-up`). A `jumpAtX` the driver reached and pressed adds `jump` (see "Jump outcomes" below); a death adds `diedAt`, and `lastStoodAt` when a rest was observed (see "Death sites"). Both follow `diedAt`'s omit-when-absent rule. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
 
@@ -90,6 +90,93 @@ Two accuracy notes, stated so reports can carry them rather than discover them:
   astronaut keeps its horizontal speed all the way down, so the x is roughly
   half a second of travel past the lip (656 → 776 in the run above). The `y`
   says "fell"; the `x` bounds where the edge is, from the right.
+
+**What it fell off (`lastStoodAt`) — the edge, not just the landing.** A death
+also carries `lastStoodAt: {x, y}`: the last spot the driver observed the
+astronaut **resting on a surface** during that move.
+
+Why it exists: `diedAt` says a fall happened and roughly where it ended, but two
+opposite outcomes end identically. The aim sweep took 48 jumps at planet-1's pit
+and **19 of them landed on the bridge and then ran off its far edge** — correct
+aim, correct power, killed by a move that kept holding *right* after touchdown.
+Every one reported the same thing as a jump that never came near the bridge: a
+pit `diedAt` around `{776, 600}`. `lastStoodAt` separates them by height alone,
+with no arithmetic and no level knowledge: `{~820, 429}` is the bridge (its
+standing height), `{~650, 476}` is the ground at the pit's lip.
+
+Resting is inferred, because the game exposes no contact flag — `BridgeState`
+carries `astronautY` and nothing about what is under the feet, and the harness is
+zero-diff on constellation. The rule is **two consecutive samples at the same
+height that were arrived at from above**. The second clause is load-bearing: near
+a jump's apex the astronaut is barely moving vertically, so two samples there can
+round to the same y, but the sample *before* them is always lower (larger y)
+because it was still climbing, while a real landing is approached from higher up.
+Without that test a bare jump over the bridge would report "last stood on"
+somewhere in mid-air at apex height. Both halves are strict — the pair must match
+exactly, and a first sample with no predecessor to compare against records
+nothing — because a 1px slack admits the first sample of a fall, which covers
+only ~1.6px in 60ms.
+
+Measured over the 68-trial sweep at this build
+(`logs/20260813-210539-aim-sweep.log`): of 59 deaths, 14 named the bridge (429)
+and 36 the ground (476) — only those two values, none of the off-by-one readings
+a 1px slack produced — and 9 named nothing.
+
+Four limits, stated so reports carry them rather than discover them.
+
+- It is the last *sampled* rest, so its `x` can be up to one poll (~14px) along
+  the surface from where the astronaut actually left it — the same bias `diedAt`
+  has, and the `y` is the part the bridge-vs-ground question turns on.
+- **A rest needs three consecutive samples** (a matching pair plus the one before
+  it), so a move whose astronaut leaves the ground inside its first two — by
+  jumping or by running off an edge — reports nothing at all. That is every one
+  of the nine silent deaths: block C's stage-two moves start parked at the lip
+  with a `jumpAtX` 20px *behind* them, so the press fires on sample one and the
+  window never closes. The rest that matters happened in the previous call, and
+  the field is scoped to this one.
+- When no rest is caught in this move, the answer can also be **stale rather than
+  absent**: a move that rested early, then landed somewhere new too briefly to
+  register, reports the earlier surface. The sweep has one trial where the driver
+  and the trace disagree this way (`A V=606 rep=4`: driver `{608, 476}`, trace a
+  bridge rest at 812) — though the trace is the likelier error there, since the
+  same aim's other three repetitions show no bridge contact at an identical apex
+  and the trace's bridge test is a 28px band sampled against a ~26px/sample
+  descent. One disagreement in 15 either way; neither side is proven.
+- It is absent entirely on a `respawned-while-armed` death: the arm wait tracks
+  no surfaces, and an armed astronaut stands still, so `diedAt` is already the
+  spot it stood in.
+
+**Jump outcomes (`jump`) — a verdict, not a keypress.** A `jumpAtX` the driver
+actually pressed adds `jump: {tookOff, pressedAt: {x, y}, apexY}`, and the
+`jumped` event now fires only when `tookOff` is true; an inert press reports
+`jump-ignored`.
+
+The old event was a lie in a specific, load-bearing case. The game grants a jump
+only from the ground, so a press issued when the astronaut is already airborne —
+past a pit's edge, say — does nothing at all. The driver polls at 60ms, which is
+14px at the 240px/s run speed, so a `jumpAtX` set within ~14px of planet-1's fall
+edge is usually first seen *after* the astronaut has left the ledge: all eight
+aim-sweep trials at `jumpAtX` ≥ 646 reported `jumped` having never left the
+ground, and pilot 4 burned a finding on the same ambiguity from the seat's side —
+its run B could not tell an attempted jump from a no-jump because both replies
+were identical. A seat cannot diagnose an aim it never got to test.
+
+The verdict is the observed rise: a jump lifts ~26px inside one poll, so the
+driver calls it a take-off once the astronaut is 8px above where the key went
+down, and calls it ignored if 240ms pass without that. A press made while already
+climbing is reported ignored immediately — climbing means airborne, and airborne
+is precisely why the game refuses it. `apexY` is the highest point reached after
+the press, which is also what tells a clean jump from one that clipped a ceiling.
+
+The verdict claims only what was observed. `tookOff: false` means no rise was
+seen, which is nearly always "already airborne" but also covers a granted jump
+cut short inside a poll; it is never a claim about the cause, and the seat prompt
+says so. A move that ends too soon after the press to tell reports `tookOff:
+null` with no event rather than a guess — the wait for the rise is bounded by
+what is left of the move's own budget, so `maxMs` stays the absolute ceiling the
+serial command chain depends on. And because the verdict lands when the rise
+resolves, its event can follow a terminal one (`["respawned", "jump-ignored"]`):
+`events` is a set, and nothing in the harness reads it in order.
 
 **Armed moves — the one latency affordance.** `/move` takes an optional
 `arm: {on: "freeze"|"platform", timeoutMs}` (`timeoutMs` only tightens the 90s
@@ -146,6 +233,10 @@ screen, the laptop driver's own `/state` snapshot — position, `respawnCount`,
 `worldLastDeath`, the laptop driver's last captured `diedAt`. The phone driver
 fetches both from the laptop driver's command port, whose `harnessDir` it
 verifies first, so a glance can only ever read this checkout's game.
+
+`worldLastDeath` carries the laptop's whole last-death record, so it gained
+`lastStoodAt` with `/move` — the phone seat asking "did they fall off the bridge
+or never reach it" is the same question from the other side of the couch.
 
 `worldLastDeath` is not decoration: the complaint this feature answers is
 specifically "I could not tell whether my partner died to the sentry, the pit,

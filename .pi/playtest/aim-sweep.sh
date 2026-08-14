@@ -232,10 +232,19 @@ trial() { # block V cut rep [park]
 	local s; s="$(state)"
 	ev="$(field "$mv" events)|$(field "$se" events)"
 	died="$(field "$mv" diedAt)"; [[ -z $died ]] && died="$(field "$se" diedAt)"
+	# The driver's own answers to the two questions this sweep had to reconstruct
+	# from the trace: did the jump actually take off, and what was the astronaut
+	# last standing on. Recorded ALONGSIDE the trace, never instead of it — the
+	# trace is polled from /state and owes nothing to /move, so the summary can
+	# check one against the other.
+	local took apexy stood
+	took="$(field "$mv" jump.tookOff)"; apexy="$(field "$mv" jump.apexY)"
+	stood="$(field "$mv" lastStoodAt)"; [[ -z $stood ]] && stood="$(field "$se" lastStoodAt)"
 	x="$(field "$s" state.x)"; y="$(field "$s" state.y)"; pc="$(field "$s" state.platformCount)"
-	printf 'TRIAL\t%s\tV=%s\tcut=%s\trep=%s\t%s\tevents=%s\tdiedAt=%s\tx=%s\ty=%s\tplat=%s\tfreeze=%sms\t%s\t%s\n' \
+	printf 'TRIAL\t%s\tV=%s\tcut=%s\trep=%s\t%s\tevents=%s\tdiedAt=%s\tx=%s\ty=%s\tplat=%s\tfreeze=%sms\ttookOff=%s\tapexY=%s\tstood=%s\t%s\t%s\n' \
 		"$block" "$v" "$cut" "$rep" "${pk:-park=none}" "$ev" "${died:-none}" "$x" "$y" "$pc" \
-		"$(field "$fz" elapsedMs)" "$(classify "$ev" "$x" "$y" "$died")" "$(trace_summary "$tf")"
+		"$(field "$fz" elapsedMs)" "${took:-none}" "${apexy:-none}" "${stood:-none}" \
+		"$(classify "$ev" "$x" "$y" "$died")" "$(trace_summary "$tf")"
 	rm -f "$tf"
 }
 
@@ -290,6 +299,11 @@ for line in open(sys.argv[1]):
     t = g("takeoff")
     rows.append({
         "block": f[1], "V": g("V"), "cut": g("cut"), "park": g("park"),
+        "rep": g("rep"),
+        # What /move itself said, kept separate from everything the trace derived.
+        "tookOff": {"true": True, "false": False}.get(g("tookOff")),
+        "stoodY": (lambda s: int(s.split(",")[1]) if s and s != "none" else None)(g("stood")),
+        "died": g("diedAt") not in (None, "none"),
         "takeoff": None if t in (None, "None") else int(t),
         "apexy": int(m.group(2)) if m else None,
         "bridge": (lambda b: None if b in (None, "None") else int(b))(g("bridge")),
@@ -299,8 +313,10 @@ print("trials=%d skipped=%d" % (len(rows), skipped))
 for blk in sorted({r["block"] for r in rows}):
     br = [r for r in rows if r["block"] == blk]
     # A jump that never left the ground reads as an apex still at standing
-    # height — the driver reports `jumped` either way, so the event cannot be
-    # used for this and the trace has to be.
+    # height. The trace stays the authority for this even though /move now
+    # reports a take-off verdict directly, because that is exactly the claim the
+    # cross-check below is testing — scoring it against itself would prove
+    # nothing.
     nojump = [r for r in br if r["apexy"] is not None and r["apexy"] >= 470]
     onbridge = [r for r in br if r["bridge"] is not None]
     # The four outcome classes the report's take-off table is built from. They
@@ -339,6 +355,47 @@ for blk in sorted({r["block"] for r in rows}):
             v, cut, park, len(rs), dict(collections.Counter(r["verdict"] for r in rs)),
             sum(1 for r in rs if r["apexy"] is not None and r["apexy"] >= 470),
             sum(1 for r in rs if r["bridge"] is not None)))
+
+# The point of the re-run: does /move's own telemetry say what the trace says?
+# The two are independent — the trace is polled from /state throughout the move,
+# while tookOff/lastStoodAt are computed inside /move's poll loop — so a
+# disagreement is a real defect in one of them and gets printed per trial rather
+# than folded into a rate.
+print()
+print("== driver telemetry vs trace ==")
+judged = [r for r in rows if r["tookOff"] is not None and r["apexy"] is not None]
+disagree = [r for r in judged if r["tookOff"] != (r["apexy"] < 470)]
+print("take-off verdict: %d trials judged, %d agree, %d disagree" % (
+    len(judged), len(judged) - len(disagree), len(disagree)))
+for r in disagree:
+    print("  DISAGREE block %s V=%s cut=%s rep=%s: /move said tookOff=%s, trace apexY=%s" % (
+        r["block"], r["V"], r["cut"], r["rep"], r["tookOff"], r["apexy"]))
+notook = [r for r in rows if r["tookOff"] is None]
+if notook:
+    print("  no take-off verdict: %d (never reached the jump x, or the move ended"
+          " too soon after the press to tell)" % len(notook))
+# A trial with a verdict but an empty trace joins neither side of the comparison.
+# Saying so is the same rule the UNCLASSIFIED line above follows: a trial that
+# falls out of every bucket gets named, never silently absorbed.
+untraced = [r for r in rows if r["tookOff"] is not None and r["apexy"] is None]
+if untraced:
+    print("  verdict but no trace to check it against: %d" % len(untraced))
+# Follow-up 2: the 19 correctly-aimed jumps that landed and then walked off must
+# stop looking like plain pit deaths. The trace says which trials touched the
+# bridge; lastStoodAt has to agree, by reporting the bridge's standing height
+# (429) rather than the ground's (476).
+print("last surface stood on, by whether the trace saw a bridge rest:")
+for touched in (True, False):
+    rs = [r for r in rows if (r["bridge"] is not None) == touched and r["stoodY"] is not None]
+    if rs:
+        print("  bridge in trace=%-5s n=%-3d stoodY %s" % (
+            touched, len(rs), dict(collections.Counter(r["stoodY"] for r in rs))))
+# Only a DEATH is supposed to carry lastStoodAt, so counting every trial without
+# one reports the block-B landings — trials that ended alive — as missing
+# telemetry. Count the trials that actually died and got nothing.
+nostood = [r for r in rows if r["died"] and r["stoodY"] is None]
+print("  died with no lastStoodAt: %d   (ended alive, so none is owed: %d)" % (
+    len(nostood), sum(1 for r in rows if not r["died"])))
 PY
 
 echo
