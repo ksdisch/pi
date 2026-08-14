@@ -51,7 +51,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
 | `POST /state` | Compact `getState()` snapshot. Runs off the serial command chain — it only reads, and the phone's world glance asks for it while this seat may be holding a 90s armed move |
-| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `jump-ignored`, `won`, `reached-x`, `time-up`). A `jumpAtX` that gets pressed adds `jump` (see "Jump outcomes" below); a death adds `diedAt` + `lastStoodAt` (see "Death sites"). Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
+| `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `jump-ignored`, `won`, `reached-x`, `time-up`). A `jumpAtX` the driver reached and pressed adds `jump` (see "Jump outcomes" below); a death adds `diedAt`, and `lastStoodAt` when a rest was observed (see "Death sites"). Both follow `diedAt`'s omit-when-absent rule. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
 
@@ -112,7 +112,18 @@ a jump's apex the astronaut is barely moving vertically, so two samples there ca
 round to the same y, but the sample *before* them is always lower (larger y)
 because it was still climbing, while a real landing is approached from higher up.
 Without that test a bare jump over the bridge would report "last stood on"
-somewhere in mid-air at apex height.
+somewhere in mid-air at apex height. Both halves are strict — the pair must match
+exactly, and a first sample with no predecessor to compare against records
+nothing — because a 1px slack admits the first sample of a fall, which covers
+only ~1.6px in 60ms.
+
+Two limits, stated so reports carry them rather than discover them. It is the
+last *sampled* rest, so its `x` can be up to one poll (~14px) along the surface
+from where the astronaut actually left it — the same bias `diedAt` has, and the
+`y` is the part the bridge-vs-ground question turns on. And it is absent when
+the driver never caught a rest at all, including every `respawned-while-armed`
+death: an armed astronaut stands still, so `diedAt` is already the spot it stood
+in.
 
 **Jump outcomes (`jump`) — a verdict, not a keypress.** A `jumpAtX` the driver
 actually pressed adds `jump: {tookOff, pressedAt: {x, y}, apexY}`, and the
@@ -135,6 +146,16 @@ down, and calls it ignored if 240ms pass without that. A press made while alread
 climbing is reported ignored immediately — climbing means airborne, and airborne
 is precisely why the game refuses it. `apexY` is the highest point reached after
 the press, which is also what tells a clean jump from one that clipped a ceiling.
+
+The verdict claims only what was observed. `tookOff: false` means no rise was
+seen, which is nearly always "already airborne" but also covers a granted jump
+cut short inside a poll; it is never a claim about the cause, and the seat prompt
+says so. A move that ends too soon after the press to tell reports `tookOff:
+null` with no event rather than a guess — the wait for the rise is bounded by
+what is left of the move's own budget, so `maxMs` stays the absolute ceiling the
+serial command chain depends on. And because the verdict lands when the rise
+resolves, its event can follow a terminal one (`["respawned", "jump-ignored"]`):
+`events` is a set, and nothing in the harness reads it in order.
 
 **Armed moves — the one latency affordance.** `/move` takes an optional
 `arm: {on: "freeze"|"platform", timeoutMs}` (`timeoutMs` only tightens the 90s

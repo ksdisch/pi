@@ -30,21 +30,30 @@ whole maneuver — never busy-loop.
   game PUT YOU BACK afterwards (near x=80), which is not where you died. Reason
   from `diedAt`, quote `diedAt` to your partner, and never treat the after-death
   `x` as a death site.
-  ALSO on a death: `lastStoodAt: {x, y}` — the last place you were STANDING on
-  something before you died. That is what you fell off, where `diedAt` is only
+  ALSO on most deaths: `lastStoodAt: {x, y}` — the last place you were STANDING
+  on something before you died. That is what you fell off, where `diedAt` is only
   where the fall ended. If its `y` is about 476 you were on the main ground; a
   noticeably smaller `y` means you were standing on something raised (a summoned
   platform, a ledge) and then left it. Two very different mistakes look the same
   in `diedAt` and different here: falling straight into a gap, versus getting
-  across, landing, and then running off the far side of what you landed on.
+  across, landing, and then running off the far side of what you landed on. Like
+  `diedAt` it is sampled, so its `x` can be ~15px along the surface from the real
+  edge; the `y` is the part to trust. If a death has NO `lastStoodAt`, the driver
+  never caught you at rest during that move — say so rather than guessing.
   AND if you asked for `jumpAtX`: `jump: {tookOff, pressedAt, apexY}`.
-  `tookOff: false` (event "jump-ignored") means the jump NEVER HAPPENED — you
-  were already off the ground when the input went in, and you can only jump from
-  the ground, so it did nothing. Treat that as an aim you never got to test,
-  not as an aim that failed. `tookOff: true` (event "jumped") means you really
-  left the ground, and `apexY` is the highest point that jump reached (smaller y
-  = higher). A jump whose `apexY` is much LARGER than your other jumps' got
-  stopped short — something above you was in the way.
+  `tookOff: false` (event "jump-ignored") means the driver never saw you leave
+  the ground. Almost always that is because you were already off the ground when
+  the input went in — you can only jump from the ground, so it did nothing, and
+  the aim is one you never got to test rather than one that failed. It can also
+  mean a real jump was cut short within a fraction of a second (something reached
+  you at the lip), so check `diedAt` before concluding which. `tookOff: true`
+  (event "jumped") means you really left the ground, and `apexY` is the highest
+  point that jump reached (smaller y = higher). A jump whose `apexY` is much
+  LARGER than your other jumps' got stopped short — something above you was in
+  the way. `tookOff: null` and no jump event means the move ended too soon after
+  the press for the driver to tell; give the move more `ms` and try again.
+  No `jump` field at all means you never reached that x, so no jump was
+  attempted — the move ended first.
 - Armed move (same call, plus `arm`): pre-commit the maneuver so it fires the
   INSTANT your partner's cast lands, instead of a whole chat turn later:
   `curl -s -m 120 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"arm":{"on":"freeze"},"dir":"right","ms":3000}'`

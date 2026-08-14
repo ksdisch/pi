@@ -16,18 +16,7 @@ for decision briefs.
    the dated `.pi/handoffs/` history.
 3. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
-4. **Jump-outcome telemetry on `/move`** — the aim sweep's two follow-ups, and
-   the first is a correctness bug, not a nicety: `/move` reports `jumped` when
-   the driver *pressed* jump, so a request the astronaut could not act on (it
-   was already airborne past the fall edge) is indistinguishable from a real
-   jump. Eight sweep trials at `jumpAtX` ≥ 646 reported `jumped` having never
-   left the ground, and pilot 4 burned a finding on the same ambiguity from the
-   seat's side. Second, `/move` should separate "fell off the bridge" from "fell
-   into the pit" — 19 sweep trials were correctly-aimed jumps that landed and
-   then walked off, and every one of them reported as a plain pit death. Same
-   shape as `diedAt` in PR #21: the harness knows and discards it. See
-   `.pi/playtest/AIM-SWEEP-2026-08-13.md`.
-5. **Playtest harness review follow-ups** — five nice-to-haves, none blocking.
+4. **Playtest harness review follow-ups** — five nice-to-haves, none blocking.
    Four from PR #21's adversarial review: mid-boot `/state` should guard on
    `booted` rather than `page` so a glance reports "laptop not ready" instead
    of a raw TypeError (F5); the derived port range's rationale holds on macOS
@@ -39,24 +28,45 @@ for decision briefs.
    it prints its figures to stdout and `rm`s its temp file, leaving the "Rails
    first" numbers as the one claim in that report a reader cannot check.
    `aim-sweep.sh` already tees; this is copying that across.
-6. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
+5. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
    finding 5. Both `/move` arm triggers fire on the *level*, so an arm placed
    against an already-running 3s freeze fires in 61ms and reads to the seat as
    "the window is open" when it is closing; two run-B deaths followed within
    0.65s of the thaw. Carrying e.g. `freezeMsLeft` lets a seat tell a fresh cast
    from a lapsing one. Observability, not assistance — a human watching the
    screen already sees it.
-7. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
+6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
    killed a seat mid-run (pilot 3, finding 6; both pilot-4 runs died the same
    way, at ~3.5 and ~5.5 min); candidate change to
    `packages/ai/src/utils/retry.ts`. Grows the rebase-sensitive surface;
    consider upstreaming instead.
-8. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+7. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
 
 ## Shipped
 
+- **Jump-outcome telemetry on `/move`** (2026-08-13, PR #25) — the aim sweep's
+  two follow-ups. `jumped` meant "the driver pressed jump", not "the astronaut
+  left the ground", and the game grants a jump only from the ground — so a press
+  made past a pit's edge did nothing while still reporting success. `/move` now
+  returns `jump: {tookOff, pressedAt, apexY}` and pushes `jumped` only once an
+  8px rise is observed, `jump-ignored` otherwise, `null` with no event when the
+  move ended too soon to tell. A death adds `lastStoodAt`, the last spot the
+  astronaut was resting on a surface, which names what it fell off rather than
+  where the fall ended. Both are inferred from sampled `y` — `BridgeState`
+  exposes no contact flag and the harness stays zero-diff on constellation — with
+  a rest defined as two samples at the same height arrived at from above, the
+  last clause being what keeps a jump's apex from reading as a ledge.
+  **Re-measured across a full 68-trial `aim-sweep.sh` re-run** (log
+  `20260813-203716`), which now records both fields per trial and scores them
+  against the independent trajectory trace: **68 of 68 take-off verdicts agree,
+  0 disagree**; 16 deaths report a bridge-height `lastStoodAt` (429/430, x
+  828–840 off a bridge spanning 722–818) against 43 at ground height (476/477),
+  with no overlap — the "landed, then walked off the far edge" class that used to
+  be indistinguishable from a plain pit death. Adversarial review raised 2
+  should-fix and 5 nice-to-have findings, all fixed. See
+  `.pi/playtest/DESIGN.md`.
 - **Planet-1 aim sweep** (2026-08-13) — the experiment pilot 4 owed, run as a
   scripted 68-trial probe (`aim-sweep.sh`) rather than another two-seat pilot,
   because a free-tier seat dies inside 5.5 minutes and this needed ~70 attempts.
@@ -64,9 +74,9 @@ for decision briefs.
   any of 12 values (0 of 48), including 19 attempts that landed on the bridge and
   then ran off it; `jumpAtX` with an `untilX` over the bridge landed 6 for 6
   across a 72px span of take-off points. The wall is feedback, not difficulty,
-  and it is entirely harness-side: both follow-ups are carried by the Active
-  "Jump-outcome telemetry on `/move`" item, and nothing here routes to
-  constellation. See `.pi/playtest/AIM-SWEEP-2026-08-13.md`.
+  and it is entirely harness-side: both follow-ups shipped as the item above, and
+  nothing here routes to constellation. See
+  `.pi/playtest/AIM-SWEEP-2026-08-13.md`.
 - **Co-op pilot 4** (2026-08-13, PR #23) — first live co-op since constellation's
   landing-triggered platform fix (its PR #40) and PR #21's telemetry. Confirmed
   the fix in live play: platforms stood 2m54s and 3m52s unlanded-on, measured

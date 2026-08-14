@@ -36,7 +36,8 @@ const ARM_REACTION_MS = 200;
  * a real take-off, and how long it waits for that rise before calling the press
  * inert. A jump (v0 460px/s) lifts ~26px inside one 60ms poll, while a grounded
  * or falling astronaut rises 0 — so 8px is clear of both by a wide margin, and
- * 240ms is four polls. See the take-off notes on `/move`.
+ * 240ms is four polls. The wait never runs past the move's own budget, so
+ * MOVE_HARD_CAP_MS stays absolute. See the take-off notes on `/move`.
  */
 const JUMP_RISE_PX = 8;
 const JUMP_RESOLVE_MS = 240;
@@ -190,6 +191,12 @@ const routes = {
 	 * round to the same y, but the sample before them is always lower (larger y)
 	 * because it was still climbing.
 	 *
+	 * `lastStoodAt` is a measurement with the same kind of bias `diedAt` has, and
+	 * in the same direction: it is the last SAMPLED rest, so it names a point up
+	 * to one 60ms poll (~14px) along the surface from where the astronaut
+	 * actually left it. Its `y` is the reliable part and the part the question
+	 * turns on; its `x` locates the edge to within a poll.
+	 *
 	 * `jumpAtX` returns a verdict, not a keypress. `jumped` used to be pushed
 	 * the moment the driver set the jump input, which is a different claim from
 	 * "the astronaut left the ground": the game only grants a jump from the
@@ -204,6 +211,21 @@ const routes = {
 	 * with `hop` also on it can belong to a later bounce rather than to this
 	 * jump; a lone `jumpAtX`, which is what a gap is taken with, has no later
 	 * bounce to confuse it with.
+	 *
+	 * What the verdict claims is exactly what was observed: `tookOff: false`
+	 * means the driver never saw the astronaut rise, which is nearly always
+	 * because it was already airborne, but also covers a granted jump cut short
+	 * within a poll (a sentry reaching it at the lip). It is never a claim about
+	 * the cause. When the move ends too soon after the press to tell at all,
+	 * `tookOff` is `null` and no event is pushed. And because the verdict lands
+	 * when the rise resolves, its event can follow a terminal one — a press that
+	 * dies within a poll returns `["respawned", "jump-ignored"]`. Read `events`
+	 * as a set; nothing in the harness depends on its order.
+	 *
+	 * Both fields follow `diedAt`'s omit-when-absent rule rather than reporting
+	 * a placeholder. No `jump` at all means the move ended before reaching the
+	 * requested x, so no jump was ever attempted; no `lastStoodAt` on a death
+	 * means the driver never caught the astronaut at rest during that move.
 	 */
 	"/move": async ({
 		dir = "none",
@@ -392,11 +414,14 @@ const routes = {
 					// already the respawned astronaut standing at spawn, and letting that
 					// in would record spawn as the last surface it stood on.
 					lastSeen = here;
-					// A flat pair means resting. `y2 <= here.y` is the arrived-from-above
-					// test that keeps a jump's apex out — see the docblock. (`y1` is
-					// always a real reading by here; only `y2` can still be unset, on the
-					// first sample of the move.)
-					if (Math.abs(here.y - y1) <= 1 && (y2 == null || y2 <= here.y)) lastStood = here;
+					// A pair at exactly the same height means resting, and `y2 <= here.y`
+					// is the arrived-from-above test that keeps a jump's apex out — see
+					// the docblock. Both halves are strict on purpose. A 1px tolerance
+					// would admit the first sample of a fall, which covers only ~1.6px in
+					// 60ms and can round to a 1px step off the ledge it just left; a
+					// missing `y2` is not evidence of arriving from above, so the move's
+					// first sample records nothing and the second one picks it up.
+					if (here.y === y1 && y2 != null && y2 <= here.y) lastStood = here;
 					y2 = y1;
 					y1 = here.y;
 				}
@@ -407,10 +432,21 @@ const routes = {
 				// the maneuver nothing and beats guessing — except after a death or a win,
 				// where the scene has moved on and the answer is already settled: a
 				// respawn one poll after the press means it was falling, not climbing.
+				//
+				// The wait is bounded by what is LEFT of the move's budget, not by a fresh
+				// JUMP_RESOLVE_MS, so `maxMs` stays the hard ceiling it is documented to be
+				// and a `time-up` break — which by definition has nothing left — adds
+				// nothing at all. In exchange a jump pressed at the very end of a tight
+				// `ms` can go unresolved; it reports no verdict rather than a wrong one.
 				if (jumpPress != null && tookOff == null) {
-					if (!events.includes("respawned") && !events.includes("won")) {
+					// A death settles the question without watching anything: the astronaut
+					// was falling when the key went down, not climbing. A win ends the
+					// scene. Either way there is nothing left to observe.
+					const settled = events.includes("respawned") || events.includes("won");
+					const left = settled ? 0 : Math.min(opts.jumpResolveMs, opts.budget - elapsedMs);
+					if (left > 0) {
 						const tw = performance.now();
-						while (performance.now() - tw < opts.jumpResolveMs) {
+						while (performance.now() - tw < left) {
 							await pause(60);
 							const w = b.getState();
 							// A death mid-wait ends the wait rather than feeding it: the same
@@ -421,8 +457,14 @@ const routes = {
 							if (jumpPress.at.y - jumpApexY >= opts.jumpRisePx) break;
 						}
 					}
-					tookOff = !jumpPress.climbing && jumpPress.at.y - jumpApexY >= opts.jumpRisePx;
-					events.push(tookOff ? "jumped" : "jump-ignored");
+					const sincePress = performance.now() - t0 - jumpPress.t;
+					if (jumpPress.at.y - jumpApexY >= opts.jumpRisePx) tookOff = true;
+					else if (jumpPress.climbing || settled || sincePress >= opts.jumpResolveMs) tookOff = false;
+					// Otherwise the move ended too soon after the press to tell, and the
+					// budget had nothing left to spend looking. `tookOff` stays null and no
+					// event is pushed — the one thing this change exists to stop is the
+					// driver stating an outcome it did not observe.
+					if (tookOff != null) events.push(tookOff ? "jumped" : "jump-ignored");
 				}
 				return {
 					events,

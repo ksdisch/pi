@@ -303,6 +303,7 @@ for line in open(sys.argv[1]):
         # What /move itself said, kept separate from everything the trace derived.
         "tookOff": {"true": True, "false": False}.get(g("tookOff")),
         "stoodY": (lambda s: int(s.split(",")[1]) if s and s != "none" else None)(g("stood")),
+        "died": g("diedAt") not in (None, "none"),
         "takeoff": None if t in (None, "None") else int(t),
         "apexy": int(m.group(2)) if m else None,
         "bridge": (lambda b: None if b in (None, "None") else int(b))(g("bridge")),
@@ -369,9 +370,16 @@ print("take-off verdict: %d trials judged, %d agree, %d disagree" % (
 for r in disagree:
     print("  DISAGREE block %s V=%s cut=%s rep=%s: /move said tookOff=%s, trace apexY=%s" % (
         r["block"], r["V"], r["cut"], r["rep"], r["tookOff"], r["apexy"]))
-missing = [r for r in rows if r["tookOff"] is None]
-if missing:
-    print("  no tookOff reported: %d (the jump point was never reached)" % len(missing))
+notook = [r for r in rows if r["tookOff"] is None]
+if notook:
+    print("  no take-off verdict: %d (never reached the jump x, or the move ended"
+          " too soon after the press to tell)" % len(notook))
+# A trial with a verdict but an empty trace joins neither side of the comparison.
+# Saying so is the same rule the UNCLASSIFIED line above follows: a trial that
+# falls out of every bucket gets named, never silently absorbed.
+untraced = [r for r in rows if r["tookOff"] is not None and r["apexy"] is None]
+if untraced:
+    print("  verdict but no trace to check it against: %d" % len(untraced))
 # Follow-up 2: the 19 correctly-aimed jumps that landed and then walked off must
 # stop looking like plain pit deaths. The trace says which trials touched the
 # bridge; lastStoodAt has to agree, by reporting the bridge's standing height
@@ -382,8 +390,12 @@ for touched in (True, False):
     if rs:
         print("  bridge in trace=%-5s n=%-3d stoodY %s" % (
             touched, len(rs), dict(collections.Counter(r["stoodY"] for r in rs))))
-nostood = [r for r in rows if r["stoodY"] is None]
-print("  no lastStoodAt reported: %d" % len(nostood))
+# Only a DEATH is supposed to carry lastStoodAt, so counting every trial without
+# one reports the block-B landings — trials that ended alive — as missing
+# telemetry. Count the trials that actually died and got nothing.
+nostood = [r for r in rows if r["died"] and r["stoodY"] is None]
+print("  died with no lastStoodAt: %d   (ended alive, so none is owed: %d)" % (
+    len(nostood), sum(1 for r in rows if not r["died"])))
 PY
 
 echo
