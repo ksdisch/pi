@@ -81,11 +81,15 @@ not couple to it.
   that same run polled the shared seen-set and ran its whole timeout deaf to a
   message that had already arrived, which then surfaced late and out of order.
   Pilots 6–7 measured 12+ live instances (60–94 s of deafness each, and manufactured
-  `arm-timeout`s; see `.pi/playtest/PILOT-2026-08-14-run{6,7}.md`). The trade: a busy
-  session no longer sees a message before its next LLM call — it hears it at its
-  next `intercom_wait` (instantly) or at run end plus at most one poll. For an
-  extension whose prompts lean on `intercom_wait` as the primary listening posture,
-  the wait being reliable is worth strictly more than mid-run steering. `pi.sendMessage` is fire-and-forget
+  `arm-timeout`s; see `.pi/playtest/PILOT-2026-08-14-run{6,7}.md`). The stand-down is
+  deliberately **global across channels**, not scoped per channel: the race is a claim
+  landing before a wait *exists*, so no per-channel prediction of future waits can
+  close it, and a global guard has no races anywhere. The trade: mid-run steering is
+  gone entirely — while a run is open, a message is heard only by an `intercom_wait`
+  on its own channel (instantly); a message on any *other* joined channel waits
+  silently until run end plus at most one poll. For an extension whose prompts lean
+  on `intercom_wait` as the primary listening posture, a reliable wait is worth
+  strictly more than mid-run steering. `pi.sendMessage` is fire-and-forget
   inside pi, so an **asynchronous** delivery failure is unobservable here and would
   lose those messages — accepted for v1: it requires pi's own message queue to fail,
   and the transcript on disk still holds the message for manual recovery.

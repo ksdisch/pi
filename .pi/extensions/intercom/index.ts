@@ -91,10 +91,12 @@ function join(state: IntercomState, channel: string, alias?: string): ChannelSta
 /** One watcher pass over every joined channel. Failures land in `watchError`, never throw. */
 function tick(pi: ExtensionAPI, state: IntercomState): void {
 	if (!state.cwd || !state.sessionId) return;
-	// Mid-run the tick stands down entirely — see `agentActive` on IntercomState. The
-	// cost is that a busy session now hears a message at its next `intercom_wait` or at
-	// run end (+ ≤ one poll) instead of before its next LLM call; the benefit is that a
-	// wait can never again run deaf to an already-arrived message.
+	// Mid-run the tick stands down on EVERY joined channel — see `agentActive` on
+	// IntercomState. Global on purpose: the race is a claim landing before a wait
+	// exists, so scoping by channel would need to predict future waits. The cost is
+	// that mid-run a message is heard only by a wait on its own channel; any other
+	// joined channel stays silent until run end (+ ≤ one poll). The benefit is that a
+	// wait can never again run deaf to an already-arrived message, on any channel.
 	if (state.agentActive) return;
 	const errors: string[] = [];
 	for (const [channel, entry] of state.joined) {
