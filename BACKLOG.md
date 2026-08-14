@@ -87,14 +87,16 @@ for decision briefs.
 
 - **Co-op pilot 6** (2026-08-14) — the release experiment, run twice with
   finding 7's `lastStoodAt` teaching and F6's conditional freeze arm in the
-  prompts. Half the answer landed: the misread is fixed (three fully-captured
-  overflight deaths in run B, three correct "took off but never landed"
-  readings, zero "cleared the pit"), but the release is still unfound — the
-  seat varied its aim and interrogated platform placement across three
-  `tookOff: true` jumps (pressed x=640–652, apexY 362, `diedAt` x=892–896)
-  and never suspected the held input; no live seat has issued
-  `untilX`-over-the-bridge in six pilots (report finding 2 proposes the
-  missing technique line). Run B lived 9m05s — the longest of any pilot —
+  prompts. Half the answer landed: the misread is fixed on captured deaths
+  (three fully-captured overflight deaths in run B, three correct "took off
+  but never landed" readings, zero "cleared the pit" — while run A still
+  misread the one death the driver never recorded, item 8's class), and the
+  release is still unfound — the seat varied its aim and interrogated
+  platform placement across three `tookOff: true` jumps (pressed x=640–652,
+  apexY 362, `diedAt` x=892–896) and never suspected the held input; run A
+  issued bridge-band `untilX` values (720, 800) on walk-ins only, and no
+  seat has ever paired one with a `jumpAtX` in six pilots (report finding 2
+  proposes the missing technique line). Run B lived 9m05s — the longest of any pilot —
   because two 90s arm-timeouts and a 63s hold were token-free quota relief.
   Major harness catch: the intercom wait-start boundary bug (item 9's
   sharpening) manufactured one of those timeouts with both seats behaving
