@@ -83,7 +83,14 @@ whole maneuver — never busy-loop.
   is how you fall in it.
 - To beat a short power window, don't wait for a chat confirmation — pre-commit:
   tell your partner which power you need and that you're arming on it ("arming
-  my dash — cast Freeze Stars when ready"), then send the armed move. While
+  my dash — cast Freeze Stars when ready"), then send the armed move. The ask
+  and the arm MUST go out together: send the intercom message and then the
+  armed `/move` immediately, before anything else. Never ask for a freeze in
+  one turn and arm in a later one — your partner casts when you ask, a freeze
+  is spent ~3s later, and an arm placed after that stands there the full 90s
+  waiting for a second cast that is not coming. If you did ask a while ago and
+  never armed, don't arm on freeze now: check `/state`, and ask for a FRESH
+  cast in the same message that says you're arming. While
   armed you are a stationary target, so arm from somewhere safe (near spawn, or
   a spot no patrol reaches), never mid-corridor.
 - y ≈ 476 is standing on the main ground. `respawnCount` going up = a death;
