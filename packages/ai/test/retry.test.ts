@@ -123,21 +123,38 @@ describe("provider retry classification", () => {
 		).toBe(false);
 	});
 
-	it("keeps a real captured token-rate per-minute quota non-retryable (context cannot shrink)", () => {
+	it("retries a real captured token-rate per-minute quota that states its own delay", () => {
+		// Pilots 3-7: four seats died fail-fast on exactly this body shape while the
+		// server stated "Please retry in …s". The stated delay is the discriminator
+		// between a rolling window filled by earlier requests (retryable) and a
+		// request whose context alone exceeds the cap (no delay stated → fail fast).
 		expect(
 			isRetryableAssistantError(
 				fauxAssistantMessage("", { stopReason: "error", errorMessage: googleFreeTier429.perMinuteInputTokensRaw }),
 			),
-		).toBe(false);
+		).toBe(true);
 	});
 
-	it("requires EVERY structured violation to be a request-rate per-minute quota", () => {
-		const body = (ids: string[]) =>
+	it("keeps a token-rate per-minute quota with NO stated delay non-retryable", () => {
+		const errorMessage =
+			'429 quota exceeded, please check your plan and billing details. violations: [{"quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"}]';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
+	it("lets a per-day violation outrank a token-rate per-minute quota with a stated delay", () => {
+		const errorMessage =
+			'429 quota exceeded. violations: [{"quotaId": "GenerateContentInputTokensPerModelPerMinute-FreeTier"}, {"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier"}] Please retry in 20s.';
+		expect(isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage }))).toBe(false);
+	});
+
+	it("requires a stated delay once any structured violation is not request-rate", () => {
+		const body = (ids: string[], delaySuffix = "") =>
 			`429 quota exceeded, please check your plan and billing details. violations: [${ids
 				.map((id) => `{"quotaId": "${id}"}`)
-				.join(", ")}]`;
+				.join(", ")}]${delaySuffix}`;
 		const requests = "GenerateRequestsPerMinutePerProjectPerModel-FreeTier";
 		const tokens = "GenerateContentInputTokensPerModelPerMinute-FreeTier";
+		// Mixed violations without a stated delay: fail fast, as before this change.
 		for (const ids of [
 			[requests, tokens],
 			[tokens, requests],
@@ -146,6 +163,16 @@ describe("provider retry classification", () => {
 				isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body(ids) })),
 			).toBe(false);
 		}
+		// The same mixed violations with the server's own delay: retryable.
+		expect(
+			isRetryableAssistantError(
+				fauxAssistantMessage("", {
+					stopReason: "error",
+					errorMessage: body([requests, tokens], " Please retry in 21.5s."),
+				}),
+			),
+		).toBe(true);
+		// Pure request-rate needs no stated delay (unchanged).
 		expect(
 			isRetryableAssistantError(fauxAssistantMessage("", { stopReason: "error", errorMessage: body([requests]) })),
 		).toBe(true);
