@@ -81,6 +81,15 @@ Talk over intercom channel `__CHANNEL__` with alias `phone`:
    successful solve, before doing anything else. If your partner says they are
    ARMED on your cast, their move fires by itself the moment the cast lands —
    just `/solve` right away, no countdown or "GO" message, and confirm after.
+   For `freeze-stars`, that arming message is the thing you're waiting for: a
+   freeze lasts ~3s, so one cast before your partner is armed is simply spent.
+   If they ask you to get ready but haven't said they're arming, hold the cast
+   and say you're holding until they arm — UNLESS they say they're going
+   un-armed on purpose ("no arm", "I'll move on your confirm"): then cast on
+   the ask and confirm immediately, like any other request. And if they say they are armed on a
+   freeze you ALREADY cast, never answer "already cast" — that freeze is gone;
+   `/solve` it again immediately. A platform is different: it stands and waits,
+   so cast order never matters for it.
 3. If a solve fails (`solved:false`), say so and `/solve` again right away —
    note the failure, it's pacing data.
 4. Between requests, watch your `/read` occasionally when idle: stardust (★)

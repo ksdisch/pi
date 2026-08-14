@@ -34,7 +34,11 @@ for decision briefs.
    "the window is open" when it is closing; two run-B deaths followed within
    0.65s of the thaw. Carrying e.g. `freezeMsLeft` lets a seat tell a fresh cast
    from a lapsing one. Observability, not assistance — a human watching the
-   screen already sees it.
+   screen already sees it. Pilot 5 made the platform half systematic (its
+   finding 4): with platforms persisting indefinitely, all five stale-platform
+   arms across both runs fired in 60–64ms with no freeze up and all five died —
+   after a run's first platform cast, "arm on platform" is permanently instant
+   and expresses no coordination.
 6. **Token-rate 429 retryability** — a 429 carrying an explicit `RetryInfo`
    killed a seat mid-run (pilot 3, finding 6; both pilot-4 runs died the same
    way, at ~3.5 and ~5.5 min); candidate change to
@@ -43,9 +47,38 @@ for decision briefs.
 7. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
+8. **Capture deaths that complete between moves** — pilot 5 finding 3
+   (unsequenced; appended at the end pending grooming). A `/move` reply can
+   only report a death inside the move, so a fall that outlives a `reached-x`
+   or a freeze that lapses while parked leaves `respawnCount` advanced with no
+   site recorded anywhere — 3 of run A's 11 deaths, including run A's jump
+   (run B's identical jump died inside an `ms`-bounded move and was fully
+   captured, so visibility currently depends on the terminator the seat
+   happened to pick). The `/state` freshness guard correctly refuses to lie; the data
+   is simply absent. Candidate: a light idle sampler in the laptop driver that
+   keeps `lastDeath` current while no move runs — observes only, honesty split
+   untouched.
 
 ## Shipped
 
+- **Co-op pilot 5** (2026-08-13) — first live co-op with the jump-outcome
+  telemetry (PR #25) in the seats' hands, and first under pilot 4 finding 4's
+  arm-ordering protocol, folded into the seat prompts for this run. Both
+  questions answered twice over: both laptops independently reasoned the same
+  aim (x=630) from `lastStoodAt` pit data and received live take-off verdicts
+  — `tookOff: true, pressedAt {632, 476}` in both runs — and both jumps
+  overflew the whole bridge because nothing cut input inside the flight,
+  exactly the aim sweep's release lesson reproduced from the seat side. Run
+  A's overflight death was invisible (the move had returned; new Active item);
+  run B's was fully captured (`diedAt {896, 602}`, `lastStoodAt {632, 476}`)
+  and the seat still misread it as "Cleared the pit" (report finding 7). The
+  protocol fix measured clean: 18/18 arms fired, zero `arm-timeout`s, zero
+  deadlocks (pilot 4: three and two ~90s). Costs surfaced: 3 of 19 deaths
+  completed between moves and are invisible to the death telemetry; five
+  stale-platform arms fired instantly and died (folded into the trigger-life
+  item); and the deadlock-free pace hit the free-tier 250k input-tokens/min
+  cap sooner — 3m27s and 1m54s of play. See
+  `.pi/playtest/PILOT-2026-08-13-run5.md`.
 - **Jump-outcome telemetry on `/move`** (2026-08-13, PR #25) — the aim sweep's
   two follow-ups. `jumped` meant "the driver pressed jump", not "the astronaut
   left the ground", and the game grants a jump only from the ground — so a press
