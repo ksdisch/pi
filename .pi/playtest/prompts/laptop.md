@@ -17,6 +17,22 @@ whole maneuver — never busy-loop.
   `curl -s -m 250 -X POST http://127.0.0.1:__LAPTOP_PORT__/await-phone`
 - Enter the planet: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/planet -d '{"id":"planet-1"}'`
 - Look at the world: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/state`
+  Alongside the live state this returns `lastDeath` — the last death the driver
+  placed: `x`/`y` where you actually were, `lastStoodAt` when it caught you
+  standing, plus `respawnCount`, `atIso`, and `via` — whose record was kept.
+  Two watchers see your deaths and only one copy is stored, and `via` is also
+  what tells you how far back `lastStoodAt` looks: on `via: "move"` it is a rest
+  from that one move, exactly like a `/move` reply's, while on `via: "sampler"`
+  it is the last rest of your whole LIFE and can name a spot from an earlier
+  move. Either way, a surface you touched too briefly to be caught resting on
+  never appears at all — so read it as "the last place I am KNOWN to have been
+  standing", not "the last place I stood".
+  Use it whenever a move ends without reporting a death but you are
+  not sure you survived it: a fall that starts inside a move can finish AFTER
+  the reply comes back, and that reply cannot mention a death that had not
+  happened yet. Compare `lastDeath.respawnCount` with `respawnCount` in the
+  same reply — equal means this record IS your latest death, lower means you
+  have died since in a way nothing could place. Never assume; check.
 - Move (ONE maneuver per call; stops early on death/win/reached-x):
   `curl -s -m 40 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"dir":"right","ms":2500,"hop":true}'`
   Options: `dir` = "right"|"left"|"none", `ms` up to 15000, `hop` true =
@@ -83,9 +99,36 @@ whole maneuver — never busy-loop.
 - If a move ends mid-air (y well above ~476 means airborne, well below means
   falling into a pit), send a settle move `{"dir":"none","ms":500}` to land
   straight down and re-check y before your next maneuver.
-- To cross a gap: run at it with `jumpAtX` set just before the edge, then
-  settle, check y, and take the next gap the same way. Random `hop` over a gap
-  is how you fall in it.
+- A move that ends BELOW standing height ended in a fall, whatever x it
+  reached, and the reply cannot tell you how that fall finished — it returned
+  first. Never announce ground gained from such a move. Check `/state`: if
+  `lastDeath.respawnCount` now matches your `respawnCount`, that move killed
+  you, and `lastDeath.lastStoodAt` is the last place you are known to have been
+  standing. Still back at the near side means you have no evidence you landed on
+  anything, however far right you got — not proof you didn't, since a touch too
+  brief to catch leaves no trace either way. Either reading leaves the crossing
+  unproven, so don't claim it.
+- To cross a gap: run at it with `jumpAtX` set before the edge, then settle,
+  check y, and take the next gap the same way. Random `hop` over a gap is how
+  you fall in it.
+- LEAVE A MARGIN on that aim — this is the single easiest way to waste a power
+  window. Set `jumpAtX` at least 20px BEFORE the edge you mean to leave from,
+  never at it. Two things push the same way: the driver checks your x every
+  ~15px, so the press lands up to ~15px later than the number you asked for,
+  and the `lastStoodAt` you worked the edge out from is itself the last spot
+  SAMPLED before you left, so the real edge is a little further on than it
+  says. A press that lands past the edge is refused outright — you are already
+  falling, and the game grants no jump in the air — so it costs you the whole
+  attempt. Don't aim a very long way back either: too early and you may clip
+  something overhead (an `apexY` much larger than your other jumps') or come
+  down short.
+- A `jump-ignored` on a move that reported NO death is your aim reporting itself
+  late — not the level telling you it does not want a jump. The fix there is the
+  same aim moved earlier, not a different plan: if you keep refusing at the same
+  number, subtract another 20px and go again. If the move also reported a death,
+  read `diedAt` before you touch the aim — a real jump cut short at the lip
+  reports the same `jump-ignored`, and moving the aim does nothing about
+  whatever reached you.
 - A jump carries your run with it: you keep moving sideways in the air for as
   long as the move is still holding a direction, so your landing spot is
   chosen by where the run STOPS, not by where you pressed jump. To land ON

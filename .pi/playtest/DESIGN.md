@@ -50,7 +50,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /boot` | Launch browser → `?test=1` (co-op, no solo) → wait for Lobby → return `{roomCode}` |
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
-| `POST /state` | Compact `getState()` snapshot. Runs off the serial command chain — it only reads, and the phone's world glance asks for it while this seat may be holding a 90s armed move |
+| `POST /state` | Compact `getState()` snapshot, plus `lastDeath` (see "The death sampler"). Runs off the serial command chain — it only reads the game, and the phone's world glance asks for it while this seat may be holding a 90s armed move. It does drain the sampler's queue into the driver, so a glance by either seat delivers the record to both |
 | `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `jump-ignored`, `won`, `reached-x`, `time-up`). A `jumpAtX` the driver reached and pressed adds `jump` (see "Jump outcomes" below); a death adds `diedAt`, and `lastStoodAt` when a rest was observed (see "Death sites"). Both follow `diedAt`'s omit-when-absent rule. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
@@ -146,6 +146,71 @@ Four limits, stated so reports carry them rather than discover them.
   no surfaces, and an armed astronaut stands still, so `diedAt` is already the
   spot it stood in.
 
+**The death sampler — a record for the falls no `/move` is there to see.** A
+60ms watcher, installed in the page at `/boot`, keeps its own death record and
+hands it to `/state` as `lastDeath`.
+
+Why it exists: a `/move` reply can only report a death that happened inside that
+move, and a fall outlives its move. Pilot 7's run A ended a move `reached-x` at
+`{680, 483}` — 24px past the pit's lip, already below standing height, i.e.
+mid-fall — and the astronaut hit the bottom about a second later while the seat
+spent twelve seconds composing its next turn. `respawnCount` went up; no reply
+anywhere carried a site. The seat announced "Crossed the pit! I'm at x=680",
+named a screenshot `past-pit`, and wrote it into its notes. Ten such deaths
+across pilots 6 and 7 carried **every** distance-as-progress misread those
+pilots produced, while every one of pilot 7's 26 captured deaths was read
+correctly. The seats can read a record; they had none to read.
+
+It runs **continuously**, not only between moves, and that is what makes the
+record worth having: the rest at the lip happens during the move, the fall
+completes after it, and only an unbroken history holds both. A sampler that
+suspended itself for each `/move` would resume airborne with no history and
+report the very case it exists for as "never caught at rest". Staged against the
+shipped code, the pilot-7 case now reads: `/move` returns `reached-x` at
+`{684, 485}` with no `diedAt`, and `/state` 0.4s later carries
+`lastDeath {x: 688, y: 585, lastStoodAt: {652, 476}, respawnCount: 1,
+via: "sampler"}` — ground height at the lip, which is the harness saying "you
+walked off and landed on nothing", the exact claim the misreads got wrong.
+
+It observes and nothing else: no input, no scene control. A human on the couch
+watching the screen already sees every death it records.
+
+Four things about the record, stated so reports carry them:
+
+- **Two observers, one `lastDeath`.** The `/move` loop and the sampler both see
+  a death that happens inside a move, phased up to a poll apart. `lastDeath`
+  only ever moves forward, keyed on `respawnCount`. On a tie the copy that names
+  `lastStoodAt` wins, because that is the whole question the field answers and
+  the two observers scope it differently; when both copies are equally
+  informative the move's wins, being the one already in the seat's hand from the
+  reply, and `/state` disagreeing with that reply about a single death is worse
+  than useless. Pilot 8 run B's rc=7 is why the first clause exists: the move
+  caught no rest and reported none, while the sampler had the astronaut standing
+  on the bridge at `{800, 429}` — "fell off the bridge" and "never reached it"
+  are exactly the two readings that record separates, and the naive rule threw
+  the informative copy away. `via` says which observer placed it (`"move"` or
+  `"sampler"`), which is also how a pilot report counts what the sampler added.
+- **`/planet` clears it.** A planet entry resets `respawnCount` to 0, so a
+  surviving record would both outrank every death of the new run forever and
+  read as fresh to a seat comparing counts. (This closes the `lastDeath`
+  freshness inversion carried as a PR #21 review follow-up; the monotonic key
+  above is what turned it from a nice-to-have into a correctness requirement.)
+- **Its `lastStoodAt` is scoped to the LIFE, not to a move.** Wider than
+  `/move`'s, which is the point — and it inherits the same "stale rather than
+  absent" limit stated above, one life wide instead of one move: a life that
+  rested at the lip, cleared to a surface too briefly to register, then fell,
+  reports the lip.
+- **A death it could not place is visible as a gap, not as silence.** With no
+  previous sample to name — the death landing on the sample right after a planet
+  entry — it records nothing rather than guessing, and the caller sees
+  `state.respawnCount` running ahead of `lastDeath.respawnCount`. Both prompts
+  teach that comparison as the freshness check.
+
+The rest test and the keep-the-previous-sample rule are deliberate copies of the
+`/move` loop's rather than a shared helper: the two run in different evaluates,
+and `/move`'s `diedAt`/`lastStoodAt` semantics are pinned by the 68-trial sweep
+measured above, which a refactor would have to re-run.
+
 **Jump outcomes (`jump`) — a verdict, not a keypress.** A `jumpAtX` the driver
 actually pressed adds `jump: {tookOff, pressedAt: {x, y}, apexY}`, and the
 `jumped` event now fires only when `tookOff` is true; an inert press reports
@@ -236,7 +301,10 @@ verifies first, so a glance can only ever read this checkout's game.
 
 `worldLastDeath` carries the laptop's whole last-death record, so it gained
 `lastStoodAt` with `/move` — the phone seat asking "did they fall off the bridge
-or never reach it" is the same question from the other side of the couch.
+or never reach it" is the same question from the other side of the couch — and
+it gained the death sampler's records with it. The glance can now answer for a
+fall the partner's own reply never mentioned, which is the one thing a
+co-located human sees that the partner does not.
 
 `worldLastDeath` is not decoration: the complaint this feature answers is
 specifically "I could not tell whether my partner died to the sentry, the pit,

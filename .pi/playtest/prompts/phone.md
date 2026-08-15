@@ -24,7 +24,12 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   `worldLastDeath` field: `{x, y}` plus the `respawnCount` it belongs to, so you
   can tell a death that just happened from an older one. `worldLastDeath.y`
   around 476 means something on the ground got them; much larger means they
-  fell. If it's null, nobody has died yet this session.
+  fell. If it's null, nobody has died yet on this planet run.
+  It covers deaths your partner's own move never reported — a fall that finishes
+  after their maneuver has already returned, which they cannot see and you can.
+  If `worldLastDeath.respawnCount` matches `world.respawnCount`, that record is
+  their latest death; if it's lower, they have died since in a way the driver
+  could not place. Either is worth saying out loud.
   When they fell, `worldLastDeath.lastStoodAt: {x, y}` is the last place they
   were STANDING before it — what they fell off, where the death site is only
   where the fall ended. A `lastStoodAt.y` around 476 means they walked off the
@@ -32,7 +37,13 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   platform you summoned, a ledge) and came off THAT — which is worth telling
   them, because it means they got there and then lost it. It is not always
   there: a death the driver never caught them standing before carries no
-  `lastStoodAt` at all, and then you only know where the fall ended.
+  `lastStoodAt` at all, and then you only know where the fall ended. How far
+  back it looks depends on `via`, which rides along on the same record: on
+  `via: "move"` it is a rest from the single move they died in, on
+  `via: "sampler"` it is the last rest of their whole life and can name a spot
+  from several moves back. Either way a surface they touched too briefly to be
+  caught on never appears, so it says where they are KNOWN to have stood — an
+  early-looking spot is weak evidence they never got further, not proof.
   If the laptop isn't reachable yet, `world` is null and `worldNote` says why —
   that's not an error, just no glance available.
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns

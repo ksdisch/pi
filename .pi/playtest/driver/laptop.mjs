@@ -41,6 +41,11 @@ const ARM_REACTION_MS = 200;
  */
 const JUMP_RISE_PX = 8;
 const JUMP_RESOLVE_MS = 240;
+/**
+ * The death sampler's poll interval — the same 60ms `/move` polls at, because it
+ * is measuring the same thing and its `diedAt` carries the same ~14px lag.
+ */
+const SAMPLER_POLL_MS = 60;
 
 let browser = null;
 let page = null;
@@ -48,7 +53,8 @@ let page = null;
  * Where the astronaut last died, carried on the driver so a caller who did not
  * issue the move can still see it — the phone's world glance is exactly that
  * caller, and "what killed my partner" is the question the glance exists to
- * answer. `/move` sets it from the same capture that fills its own `diedAt`.
+ * answer. Written by `/move` from the same capture that fills its own `diedAt`,
+ * and by the death sampler for the deaths no move was running to see.
  */
 let lastDeath = null;
 let roomCode = null;
@@ -79,6 +85,170 @@ const compact = (s) => ({
 
 const snapshot = async () => compact(await requireBooted().evaluate(() => window.__constellation.getState()));
 
+/**
+ * `lastDeath` only ever moves forward, keyed on `respawnCount`. Two observers
+ * watch the same game — the `/move` loop and the death sampler — so the same
+ * death arrives twice, phased up to a poll apart, and the later copy must not
+ * quietly rewrite the earlier one. The move loop wins its own tie: its record is
+ * the one already in the seat's hand from the `/move` reply, and `/state`
+ * disagreeing with that reply about a single death is worse than useless.
+ *
+ * The ordering key is why `/planet` clears the record: a re-entry resets
+ * `respawnCount` to 0, and a surviving record from the previous life would
+ * outrank every death of the new one forever.
+ */
+function recordDeath(death) {
+	let beatsIt;
+	if (lastDeath == null || death.respawnCount > lastDeath.respawnCount) beatsIt = true;
+	else if (death.respawnCount < lastDeath.respawnCount) beatsIt = false;
+	else {
+		// The same death, seen by both observers. Prefer whichever copy names what
+		// was fallen off: that is the whole question `lastStoodAt` answers, and the two
+		// scope it differently — `/move`'s covers only that move, the sampler's the
+		// whole life. Pilot 8 run B rc=7 is the case that forced this: the move caught
+		// no rest and reported none, while the sampler had the astronaut standing on
+		// the bridge at {800, 429} — "fell off the bridge" and "never reached it" are
+		// exactly the two readings that record separates. With both copies equally
+		// informative the move's wins, being the one already in the seat's hand.
+		const gains = death.lastStoodAt != null && lastDeath.lastStoodAt == null;
+		const loses = death.lastStoodAt == null && lastDeath.lastStoodAt != null;
+		beatsIt = gains || (!loses && death.via === "move" && lastDeath.via !== "move");
+	}
+	// One line per death the driver placed, into the run's driver log. Without it
+	// a pilot report can only count the deaths a seat happened to look at, which is
+	// not the same question as how many the sampler placed. `kept=false` is the same
+	// death arriving from the second observer — the two agreeing, not a duplicate.
+	const stood = death.lastStoodAt ? `${death.lastStoodAt.x},${death.lastStoodAt.y}` : "none";
+	console.log(
+		`[laptop-driver] death rc=${death.respawnCount} via=${death.via} at=${death.x},${death.y} stood=${stood} kept=${beatsIt}`,
+	);
+	if (beatsIt) lastDeath = death;
+}
+
+/**
+ * The death sampler — a 60ms watcher, installed in the page once at boot, that
+ * keeps a death record for the falls no `/move` call is there to see.
+ *
+ * The gap it closes: a `/move` reply can only report a death that happened
+ * inside that move, and a fall outlives its move. Pilot 7's run A ended a move
+ * `reached-x` at `{680, 483}` — 24px past the pit's lip and already below
+ * standing height, i.e. mid-fall — and the astronaut hit the bottom about a
+ * second later, while the seat was spending twelve seconds composing its next
+ * turn. `respawnCount` went up and no reply anywhere carried a site, so the seat
+ * announced "Crossed the pit! I'm at x=680", named a screenshot `past-pit`, and
+ * wrote it into its notes. Ten such deaths across pilots 6 and 7 carried every
+ * distance-as-progress misread those pilots produced, while every one of pilot
+ * 7's 26 captured deaths was read correctly. The seats can read a record; they
+ * just had none to read.
+ *
+ * It runs continuously rather than only between moves, and that is what makes
+ * the record worth having: the rest at the lip happens during the move, the fall
+ * completes after it, and only an unbroken history has both. A sampler that
+ * suspended itself for the duration of each `/move` would resume airborne with
+ * no history and report the very case it exists for as "never caught at rest".
+ *
+ * It observes and nothing else. No input, no scene control — the honesty split
+ * is untouched, and a human on the couch watching the screen already sees every
+ * death this records.
+ *
+ * The rest test and the keep-the-previous-sample rule are deliberate copies of
+ * the `/move` loop's, not a shared helper: the two loops run in different
+ * evaluates, and `/move`'s `diedAt`/`lastStoodAt` semantics are pinned by a
+ * measured 68-trial sweep (DESIGN.md) that a refactor would have to re-run.
+ *
+ * One scope difference is real and the prompts teach it: `/move`'s
+ * `lastStoodAt` is scoped to that move, this one is scoped to the whole life.
+ * The wider scope is the point — and it carries the same "stale rather than
+ * absent" limit DESIGN.md already states, one life wide instead of one move.
+ */
+async function installDeathSampler(p) {
+	await p.evaluate((pollMs) => {
+		if (window.__playtestDeathSampler) return;
+		const b = window.__constellation;
+		const sampler = {
+			deaths: [],
+			errors: 0,
+			lastError: null,
+			drain() {
+				const out = { deaths: sampler.deaths, errors: sampler.errors, lastError: sampler.lastError };
+				sampler.deaths = [];
+				sampler.errors = 0;
+				sampler.lastError = null;
+				return out;
+			},
+			reset() {
+				sampler.deaths = [];
+				prevCount = null;
+				forget();
+			},
+		};
+		// The last sample taken while the current life was still current, plus the
+		// two previous rounded heights the rest test needs and the last rest seen.
+		let prevCount = null;
+		let lastSeen = null;
+		let lastStood = null;
+		let y1 = null;
+		let y2 = null;
+		const forget = () => {
+			lastSeen = null;
+			lastStood = null;
+			y1 = null;
+			y2 = null;
+		};
+		setInterval(() => {
+			try {
+				const s = b.getState();
+				// Outside a planet there is nothing to watch: the bridge's default
+				// provider answers with a zeroed snapshot (`sceneKey: ''`,
+				// `respawnCount: 0`), which must never be read as a life or a death.
+				if (s.sceneKey !== "Planet") {
+					prevCount = null;
+					forget();
+					return;
+				}
+				const here = { x: Math.round(s.astronautX), y: Math.round(s.astronautY) };
+				// First sample on this planet, or a `/planet` re-entry that reset the
+				// count: adopt the baseline. A count that went DOWN is a new run, never
+				// a death.
+				if (prevCount == null || s.respawnCount < prevCount) {
+					prevCount = s.respawnCount;
+					forget();
+					return;
+				}
+				if (s.respawnCount > prevCount) {
+					prevCount = s.respawnCount;
+					// `here` is already the respawned astronaut standing at spawn — the
+					// game respawns in the same frame it bumps the count — so the record
+					// is the PREVIOUS sample. With no previous sample the sampler never
+					// saw the old life and records nothing rather than guessing; the
+					// caller sees that as `state.respawnCount` running ahead of
+					// `lastDeath.respawnCount`.
+					if (lastSeen) {
+						sampler.deaths.push({
+							...lastSeen,
+							...(lastStood ? { lastStoodAt: lastStood } : {}),
+							respawnCount: s.respawnCount,
+							atIso: new Date().toISOString(),
+						});
+					}
+					forget();
+					return;
+				}
+				lastSeen = here;
+				// Same rule as the `/move` loop: a rest is a flat PAIR of heights
+				// arrived at from above, both halves strict. See that docblock.
+				if (here.y === y1 && y2 != null && y2 <= here.y) lastStood = here;
+				y2 = y1;
+				y1 = here.y;
+			} catch (err) {
+				sampler.errors += 1;
+				sampler.lastError = String(err && err.message ? err.message : err);
+			}
+		}, pollMs);
+		window.__playtestDeathSampler = sampler;
+	}, SAMPLER_POLL_MS);
+}
+
 const routes = {
 	"/boot": async () => {
 		// `booted` flips only on full success — a failed boot tears down and lets
@@ -106,6 +276,9 @@ const routes = {
 			await page.waitForFunction(() => Boolean(window.__constellation), null, { timeout: 15_000 });
 			const got = await waitFor(() => roomCode, 20_000);
 			if (!got) throw new Error("no room-created frame in 20s — is the relay on :3081 up?");
+			// Watch from here on, so no life on any planet is ever unobserved. It
+			// idles on the zeroed snapshot until a planet starts.
+			await installDeathSampler(page);
 		} catch (err) {
 			// The context created above already has a recording in flight. Close it
 			// first so Playwright finalizes the webm, then flush it under a name that
@@ -144,14 +317,42 @@ const routes = {
 		await p.waitForFunction(() => window.__constellation.getState().sceneKey === "Planet", null, {
 			timeout: 10_000,
 		});
+		// A planet entry resets `respawnCount`, so a death record from the previous
+		// run would both outrank every death of this one (see `recordDeath`) and read
+		// as fresh to a seat comparing counts. Drop it and re-baseline the sampler:
+		// this run has not died yet, and that is the honest answer.
+		lastDeath = null;
+		await p.evaluate(() => window.__playtestDeathSampler?.reset());
 		return { state: await snapshot() };
 	},
 
 	// `lastDeath` rides along so a glance from the phone can answer "what killed
 	// them" — the live `x`/`y` in `state` is the RESPAWN point after a death, and
 	// a seat reading that as a death site is the misattribution `diedAt` exists to
-	// end. Null until the first death of the session.
-	"/state": async () => ({ state: await snapshot(), lastDeath }),
+	// end. Null until the first death of this planet run.
+	//
+	// It answers for the seat's OWN deaths too, which is the point of draining the
+	// sampler here: a fall that outlived its `/move` reply reaches the seat no other
+	// way. `via` says which observer caught it — "move" for a death the reply
+	// already reported, "sampler" for one only this record has. `respawnCount` is
+	// how a caller tells fresh from stale: equal to `state.respawnCount` means the
+	// record IS the latest death; lower means deaths happened that nothing placed.
+	"/state": async () => {
+		const p = requireBooted();
+		// One evaluate for both, so a glance costs one round trip: the snapshot, and
+		// whatever deaths the sampler has seen since the last drain. Draining into the
+		// driver rather than into this reply is what lets either seat drain without
+		// stealing the record from the other — `lastDeath` is where it lands.
+		const { state, sampled } = await p.evaluate(() => ({
+			state: window.__constellation.getState(),
+			sampled: window.__playtestDeathSampler ? window.__playtestDeathSampler.drain() : null,
+		}));
+		for (const death of sampled?.deaths ?? []) recordDeath({ ...death, via: "sampler" });
+		if (sampled?.errors) {
+			console.error(`[laptop-driver] death sampler: ${sampled.errors} error(s), last: ${sampled.lastError}`);
+		}
+		return { state: compact(state), lastDeath };
+	},
 
 	/**
 	 * One maneuver as a single in-page loop — all timing runs in the browser, so
@@ -502,13 +703,16 @@ const routes = {
 			if (result.lastStood) reply.lastStoodAt = result.lastStood;
 			// Kept for /state, where the age matters: a glance arriving much later
 			// must be able to tell "just now" from "ten deaths ago", so the death's
-			// own respawn count and wall-clock time travel with the position.
-			lastDeath = {
+			// own respawn count and wall-clock time travel with the position. The
+			// sampler watched this same death too, so it goes through `recordDeath`,
+			// which keeps the two copies from overwriting each other.
+			recordDeath({
 				...result.diedAt,
 				...(result.lastStood ? { lastStoodAt: result.lastStood } : {}),
 				respawnCount: result.after.respawnCount,
 				atIso: new Date().toISOString(),
-			};
+				via: "move",
+			});
 		}
 		if (armOpts) reply.armedForMs = result.armedForMs;
 		return reply;
