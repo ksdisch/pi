@@ -8,18 +8,36 @@ for decision briefs.
 
 ## Active (sequenced)
 
-1. **Slack/Telegram loop-in at decision points** — its value was gated on
-   sessions running unattended, which the shipped item below now delivers, so
-   this is next rather than speculative. Needs a design pass and external
-   credentials.
-2. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
+1. **Expose more than the newest death on `/state`** — pilot 8's follow-up to
+   the shipped death sampler. `lastDeath` is one slot, drained on `/state`, so a
+   seat that does not look promptly loses the intermediate records: across
+   pilot 8 the sampler *observed* 12 deaths no `/move` reported and only 3 ever
+   reached a seat, the rest correctly rejected as stale once a later death
+   outranked them. Candidate: a short `recentDeaths` list (a handful, newest
+   first) alongside `lastDeath`, so a seat that looks late still sees what it
+   missed. Small; the sampler already queues them. Part of the pilot 9 arc
+   (`docs/build-plans/2026-08-15-pilot-9-composition.md`).
+2. **Stop handoff-digest injection into playtest seats** — pilot 5, review
+   finding F8. The handoff extension injected run A's phone-session shutdown
+   digest into run B's laptop seat at startup: cross-run contamination that
+   cost the seat its first turn and weakens any cross-run independence claim a
+   report makes. Decide how seat sessions opt out (e.g. `run-pilot.sh`
+   launching seats with the handoff extension disabled or env-gated) and
+   implement it. Part of the pilot 9 arc (same plan doc).
+3. **Slack/Telegram loop-in at decision points** — design pass ran 2026-08-15
+   (`docs/build-plans/2026-08-15-slack-loop-in.md`, PR #35): bridge the
+   intercom's `kyle` channel to Telegram v1, Slack as a later port. Remaining:
+   Telegram credentials (Kyle-action, named in the doc), then the build.
+4. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
    the dated `.pi/handoffs/` history.
-3. **Walk-up note detection / cross-cwd routing** — small; no observed pain
+5. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
-4. **Playtest harness review follow-ups** — four nice-to-haves, none blocking.
+6. **Playtest harness review follow-ups** — nice-to-haves, none blocking.
    Three from PR #21's adversarial review: mid-boot `/state` should guard on
    `booted` rather than `page` so a glance reports "laptop not ready" instead
-   of a raw TypeError (F5); the derived port range's rationale holds on macOS
+   of a raw TypeError (F5 — the raw-TypeError half has since softened to a
+   descriptive throw, but the mid-boot window where `page` exists before
+   `booted` flips remains); the derived port range's rationale holds on macOS
    but sits inside Linux's default ephemeral range (F6); the
    glance's documented 2s bound is ~4s on the first `/read` (F10). (F9, the
    `lastDeath` freshness inversion across a `/planet` re-entry, shipped with
@@ -29,7 +47,19 @@ for decision briefs.
    it prints its figures to stdout and `rm`s its temp file, leaving the "Rails
    first" numbers as the one claim in that report a reader cannot check.
    `aim-sweep.sh` already tees; this is copying that across.
-5. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
+   Grown 2026-08-15 with the still-open leftovers of two later reviews. From
+   PR #31's (pilot 8; F3/F4/F12/F13/F14 fixed in PR #33, F6/F11 ride the
+   pilot 9 arc): the sampler's between-planets guard comment is load-bearing
+   and wrong (F5); `/state` now mutates but `common.mjs`'s off-chain contract
+   still says pure reads only (F7); the aim-margin "subtract 20px" line is
+   rightward-only and inverts for `dir: "left"` (F8); the post-loop jump
+   resolver can emit `jump-ignored` on a move whose death it saw but never
+   reported (F10). From PR #32's (red CI fix): the intercom workflow's "tests
+   import pi types only" comment is now false (F1); the vitest alias
+   prefix-matches, so a future pi-tui subpath import dies at runtime (F3);
+   the handoff extension's sibling config carries the identical trap behind a
+   comment that reads as a guarantee (F4).
+7. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
    finding 5. Both `/move` arm triggers fire on the *level*, so an arm placed
    against an already-running 3s freeze fires in 61ms and reads to the seat as
    "the window is open" when it is closing; two run-B deaths followed within
@@ -41,24 +71,12 @@ for decision briefs.
    across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
-6. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+8. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
-   branch `feat/expose-newsession-to-events` pushed, not yet posted.
-7. **Expose more than the newest death on `/state`** — pilot 8's follow-up to
-   the shipped death sampler. `lastDeath` is one slot, drained on `/state`, so a
-   seat that does not look promptly loses the intermediate records: across
-   pilot 8 the sampler *observed* 12 deaths no `/move` reported and only 3 ever
-   reached a seat, the rest correctly rejected as stale once a later death
-   outranked them. Candidate: a short `recentDeaths` list (a handful, newest
-   first) alongside `lastDeath`, so a seat that looks late still sees what it
-   missed. Small; the sampler already queues them.
-8. **Stop handoff-digest injection into playtest seats** — pilot 5, review
-    finding F8 (unsequenced; appended pending grooming). The handoff extension
-    injected run A's phone-session shutdown digest into run B's laptop seat at
-    startup: cross-run contamination that cost the seat its first turn and
-    weakens any cross-run independence claim a report makes. Decide how seat
-    sessions opt out (e.g. `run-pilot.sh` launching seats with the handoff
-    extension disabled or env-gated) and implement it.
+   branch `feat/expose-newsession-to-events` pushed, not yet posted. PR #32
+   review F2 — the Cloudflare compat test's pin to a volatile,
+   network-hydrated catalog model id — is a second upstream-post candidate to
+   carry along.
 
 ## Shipped
 
