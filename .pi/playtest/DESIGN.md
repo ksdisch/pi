@@ -179,11 +179,17 @@ Four things about the record, stated so reports carry them:
 
 - **Two observers, one `lastDeath`.** The `/move` loop and the sampler both see
   a death that happens inside a move, phased up to a poll apart. `lastDeath`
-  only ever moves forward, keyed on `respawnCount`, and the move loop wins its
-  own tie — its record is the one already in the seat's hand from the reply, and
-  `/state` disagreeing with that reply about a single death is worse than
-  useless. `via` says which observer placed it (`"move"` or `"sampler"`), which
-  is also how a pilot report counts what the sampler added.
+  only ever moves forward, keyed on `respawnCount`. On a tie the copy that names
+  `lastStoodAt` wins, because that is the whole question the field answers and
+  the two observers scope it differently; when both copies are equally
+  informative the move's wins, being the one already in the seat's hand from the
+  reply, and `/state` disagreeing with that reply about a single death is worse
+  than useless. Pilot 8 run B's rc=7 is why the first clause exists: the move
+  caught no rest and reported none, while the sampler had the astronaut standing
+  on the bridge at `{800, 429}` — "fell off the bridge" and "never reached it"
+  are exactly the two readings that record separates, and the naive rule threw
+  the informative copy away. `via` says which observer placed it (`"move"` or
+  `"sampler"`), which is also how a pilot report counts what the sampler added.
 - **`/planet` clears it.** A planet entry resets `respawnCount` to 0, so a
   surviving record would both outrank every death of the new run forever and
   read as fresh to a seat comparing counts. (This closes the `lastDeath`

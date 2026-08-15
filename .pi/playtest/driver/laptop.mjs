@@ -98,10 +98,22 @@ const snapshot = async () => compact(await requireBooted().evaluate(() => window
  * outrank every death of the new one forever.
  */
 function recordDeath(death) {
-	const beatsIt =
-		lastDeath == null ||
-		death.respawnCount > lastDeath.respawnCount ||
-		(death.respawnCount === lastDeath.respawnCount && death.via === "move" && lastDeath.via !== "move");
+	let beatsIt;
+	if (lastDeath == null || death.respawnCount > lastDeath.respawnCount) beatsIt = true;
+	else if (death.respawnCount < lastDeath.respawnCount) beatsIt = false;
+	else {
+		// The same death, seen by both observers. Prefer whichever copy names what
+		// was fallen off: that is the whole question `lastStoodAt` answers, and the two
+		// scope it differently — `/move`'s covers only that move, the sampler's the
+		// whole life. Pilot 8 run B rc=7 is the case that forced this: the move caught
+		// no rest and reported none, while the sampler had the astronaut standing on
+		// the bridge at {800, 429} — "fell off the bridge" and "never reached it" are
+		// exactly the two readings that record separates. With both copies equally
+		// informative the move's wins, being the one already in the seat's hand.
+		const gains = death.lastStoodAt != null && lastDeath.lastStoodAt == null;
+		const loses = death.lastStoodAt == null && lastDeath.lastStoodAt != null;
+		beatsIt = gains || (!loses && death.via === "move" && lastDeath.via !== "move");
+	}
 	// One line per death the driver placed, into the run's driver log. Without it
 	// a pilot report can only count the deaths a seat happened to look at, which is
 	// not the same question as how many the sampler placed. `kept=false` is the same

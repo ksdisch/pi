@@ -16,14 +16,15 @@ for decision briefs.
    the dated `.pi/handoffs/` history.
 3. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
-4. **Playtest harness review follow-ups** — five nice-to-haves, none blocking.
-   Four from PR #21's adversarial review: mid-boot `/state` should guard on
+4. **Playtest harness review follow-ups** — four nice-to-haves, none blocking.
+   Three from PR #21's adversarial review: mid-boot `/state` should guard on
    `booted` rather than `page` so a glance reports "laptop not ready" instead
    of a raw TypeError (F5); the derived port range's rationale holds on macOS
-   but sits inside Linux's default ephemeral range (F6); `lastDeath` survives a
-   `/planet` re-entry that resets `respawnCount`, inverting the freshness rule
-   the phone prompt teaches — clear it, and point the seat at `atIso` (F9); the
-   glance's documented 2s bound is ~4s on the first `/read` (F10). Plus one from
+   but sits inside Linux's default ephemeral range (F6); the
+   glance's documented 2s bound is ~4s on the first `/read` (F10). (F9, the
+   `lastDeath` freshness inversion across a `/planet` re-entry, shipped with
+   pilot 8's death sampler — the sampler's monotonic ordering made clearing the
+   record a correctness requirement rather than a nicety.) Plus one from
    pilot 4's appendix: tee `verify-rails.sh` to `logs/<date>-rails.log`, since
    it prints its figures to stdout and `rm`s its temp file, leaving the "Rails
    first" numbers as the one claim in that report a reader cannot check.
@@ -43,22 +44,14 @@ for decision briefs.
 6. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted.
-7. **Capture deaths that complete between moves** — pilot 5 finding 3
-   (unsequenced; appended at the end pending grooming). A `/move` reply can
-   only report a death inside the move, so a fall that outlives a `reached-x`
-   or a freeze that lapses while parked leaves `respawnCount` advanced with no
-   site recorded anywhere — 3 of run A's 11 deaths, including run A's jump
-   (run B's identical jump died inside an `ms`-bounded move and was fully
-   captured, so visibility currently depends on the terminator the seat
-   happened to pick). The `/state` freshness guard correctly refuses to lie; the data
-   is simply absent. Candidate: a light idle sampler in the laptop driver that
-   keeps `lastDeath` current while no move runs — observes only, honesty split
-   untouched. *Pilots 6–7 update:* 10 more invisible deaths (2 + 8), and
-   every distance-as-progress misread across both pilots — including two
-   "Crossed the pit!" announcements over uncaptured mid-fall deaths, one
-   with a celebratory screenshot — sits on an invisible death, while all 26
-   of pilot 7's captured deaths were read correctly. The sampler is what
-   makes the misread checkable.
+7. **Expose more than the newest death on `/state`** — pilot 8's follow-up to
+   the shipped death sampler. `lastDeath` is one slot, drained on `/state`, so a
+   seat that does not look promptly loses the intermediate records: across
+   pilot 8 the sampler *observed* 12 deaths no `/move` reported and only 3 ever
+   reached a seat, the rest correctly rejected as stale once a later death
+   outranked them. Candidate: a short `recentDeaths` list (a handful, newest
+   first) alongside `lastDeath`, so a seat that looks late still sees what it
+   missed. Small; the sampler already queues them.
 8. **Stop handoff-digest injection into playtest seats** — pilot 5, review
     finding F8 (unsequenced; appended pending grooming). The handoff extension
     injected run A's phone-session shutdown digest into run B's laptop seat at
@@ -69,6 +62,34 @@ for decision briefs.
 
 ## Shipped
 
+- **Co-op pilot 8 — the planet fell** (2026-08-14) — the aim-margin experiment,
+  and with it the former Active item "capture deaths that complete between
+  moves". **Run B cleared planet-1** (`won: true` at x=892, rc 7, 7m46s), the
+  first live co-op clear in eight pilots; run A played 19m17s for 36 deaths and
+  no clear. The two changes composed into one chain: run B walked into the pit
+  on a move that returned `reached-x` and reported no death at all, the new
+  death sampler placed that fall (`lastDeath {756, 578, lastStoodAt: {652, 476},
+  via: "sampler"}`), the seat read 652 as the near lip, and the taught 20px
+  margin turned that into `jumpAtX: 630` — presses at 632 and 636, **three
+  take-offs from three presses**, against pilot 7's one from five at
+  `jumpAtX: 645`. The clearing jump was taken from the bridge itself
+  (`before {808, 429}`). Sampler coverage across both runs: 43 deaths, `/move`
+  saw 30, the sampler 39, **12 seen only by the sampler**, 1 by neither; on the
+  deaths both saw, the two independently-sampled `diedAt`s agree to within a
+  poll, the first cross-check on `diedAt` that is not the aim sweep's trace.
+  Also measured: 17 per-minute 429s survived across the two runs (13 + 4; 16 of
+  them the token-rate shape, one request-rate, zero per-day), where a single one
+  of that shape was what killed the four seats the 429 item records — so both
+  runs ended gracefully and **all four seats wrote their reports**, closing
+  pilot 7's finding 6. Run B recorded zero `arm-timeout`s. Two things did not
+  move: run A never issued a single `jumpAtX` (the same one-seat-in-two
+  composition rate as pilot 7), and one distance-as-progress misread survived on
+  a record that *did* reach the seat — both pit lips are ground height, so
+  `lastStoodAt.y` cannot separate near from far. The pilot's own driver ledger
+  also caught a defect in the change: a tie-break that preferred `/move`'s copy
+  unconditionally discarded the sampler's more informative one on run B's rc=7
+  (bridge at `{800, 429}` vs no `lastStoodAt` at all); fixed post-run. See
+  `.pi/playtest/PILOT-2026-08-14-run8.md`.
 - **Token-rate 429 retryability** (2026-08-14) — closes the former Active item
   6. A `GenerateContent…InputTokensPerModelPerMinute` 429 is now retryable in
   `packages/ai/src/utils/retry.ts` (absent per-day violations or account
