@@ -10,11 +10,12 @@ for decision briefs.
 
 1. **Teach the seat where the lip IS, not just to jump** — pilot 9 finding 2,
    the successor to the composition item the trigger-bound rule half-closed.
-   The rule converted run A completely (9 `jumpAtX` calls, 4 take-offs from 4
-   presses, a clear) and did not convert run B, which issued one composed move
-   in 64 and aimed it 76px PAST a lip its own ledger names twice — so the
-   residual failure is no longer "never retrieves the option" but "retrieves it
-   and mis-parameterises it". Two concrete pieces: PR #37 review F11 (the
+   The rule converted run A completely (9 `jumpAtX` calls in 14 moves, 4
+   take-offs from 4 presses, a clear) and did not convert run B, which issued
+   one composed move in 62 and aimed it 64–72px PAST the lip its own records
+   supported at that moment (`lastStoodAt` 648–656 across rc=4/7/9/10/11) — so
+   the residual failure is no longer "never retrieves the option" but "retrieves
+   it and mis-parameterises it". Two concrete pieces: PR #37 review F11 (the
    sampler-scope check reads "sits near where this fall started", which is
    circular — the drafted replacement is "within ~150px of `diedAt.x` on the
    side you came from"), and a check on the aim itself, since a `jumpAtX` past
@@ -112,11 +113,13 @@ for decision briefs.
   the newest death on `/state`" and "stop handoff-digest injection into playtest
   seats". **Run A cleared planet-1** (`won: true` at x=892, rc 8, 7m23s) — the
   second clear in nine pilots — and it is the seat role that issued **zero**
-  `jumpAtX` in both pilot 7 and pilot 8: with the trigger-bound crossing rule it
-  issued **9 in 16 moves, took off on 4 of 4 presses**, aiming `jumpAtX: 624`
-  off a lip of 644 that a *sampler-only* death supplied, then clearing from the
-  bridge at `jumpAtX: 816`. Run B did not convert — 1 composed move in 64, aimed
-  76px PAST a lip its own ledger names twice, refused (`jump-ignored`) — so the
+  `jumpAtX` in both pilot 7 and pilot 8 (zero in 60 calls in pilot 8 run A
+  alone): with the trigger-bound crossing rule it issued **9 in 14 moves and
+  took off on 4 of 4 presses**, aiming `jumpAtX: 624` off a lip of 644 that a
+  *sampler-only* death supplied, then clearing from the bridge at
+  `jumpAtX: 816`. Run B did not convert — 1 composed move in 62, aimed 64–72px
+  PAST the lip its records supported, refused (`jump-ignored`, pressed at y=514
+  already falling) — so the
   rate is still 1 of 2 and the residual failure changed shape from "never
   retrieves the option" to "mis-parameterises it" (new Active item 1).
   `recentDeaths` measured clean: **7 of 7 sampler-only deaths reached a seat**
