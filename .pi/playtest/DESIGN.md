@@ -195,23 +195,44 @@ Five things about the record, stated so reports carry them:
   death whose `respawnCount` appears on a `via=sampler` ledger line and on no
   `via=move` line, kept or not, which is how pilot 8's table is tallied.
 - **`recentDeaths` — the tail the single slot dropped.** `/state` returns the
-  last five records newest-first, one per `respawnCount`, with `lastDeath` as
-  the head; there is one list and `lastDeath` is a view of its first element,
-  so the two can never disagree. The head answers what a seat asks after a move
-  ("did that kill me?"), and one slot answered that correctly. The tail answers
-  the other question. A single drain can hand over several sampler deaths at
-  once, and everything but the newest used to be dropped: pilot 8 run A is the
-  case — the sampler placed rc=27 and rc=31, a later `/move` had already
-  recorded a higher count by the time anything drained them, and the seat never
-  learned either. An older death takes a slot only while there is room; the cap
-  trims from the old end, and a death arriving already older than five held
-  records is dropped rather than displacing a newer one the seat can still act
-  on. The ledger distinguishes the two: `kept=` still means "this copy is now
-  the newest record" — unchanged, so pilot tallies stay comparable — and
-  `listed=` is the separate question of whether a later `/state` can still hand
-  it over. The phone's world glance is deliberately unchanged: `worldLastDeath`
-  is the head only, because "what just killed my partner" is a one-record
-  question and a glance is meant to cost a look, not a briefing.
+  newest ten records, one per `respawnCount`, with `lastDeath` as the head. The
+  head answers what a seat asks after a move ("did that kill me?"), and one slot
+  answered that correctly. The tail answers the other question. A single drain
+  can hand over several sampler deaths at once, and everything but the newest
+  used to be dropped: pilot 8 run A is the case — the sampler placed rc=27 and
+  rc=31, a later `/move` had already recorded a higher count by the time
+  anything drained them, and the seat never learned either.
+
+  **The cap is measured, not chosen.** A drain carries every death queued since
+  the last look, and replaying run A's ledger (57 records) gives drains of 2, 3,
+  1, 6, 10 and 10. A cap below the deepest drain evicts records *inside the
+  drain that added them*, before any seat can read them — at a cap of five, 7 of
+  run A's 10 sampler-only deaths reach a `/state` and rc=27, one of the two this
+  list exists to rescue, does not. At ten, all ten do. So the cap is the deepest
+  observed drain, and what the list guarantees is bounded and exact: the newest
+  ten deaths of this planet run, nothing older. A busier stretch can still
+  overflow one.
+
+  Three ledger lines, answering three different questions, because conflating
+  them is how a report over-counts. `kept=` means "this copy is now the newest
+  record" — unchanged from pilot 8, so tallies stay comparable across reports.
+  `listed=` means the record entered the list, decided at insert. `evicted rc=`
+  is what a later trim removed, which is what keeps `listed=` from silently
+  standing for a record no seat could be handed. And **reach is a delivery
+  question, so it is counted from the `state handed rc=[…]` line** — one per
+  `/state`, naming exactly what left the driver — never from `listed=`. The
+  driver cannot tell which seat is looking (the phone's glance calls `/state`
+  too), so a per-seat tally reads those lines alongside the transcripts.
+
+  `lastDeath` is the head of that same list rather than a second variable, so
+  there is nothing to fall out of step with it across calls. Within one reply
+  the two are taken a moment apart and the array is returned live, so a `/move`
+  or `/planet` completing inside that window is a known, narrow race (carried as
+  a review follow-up, not a claimed invariant).
+
+  The phone's world glance is deliberately unchanged: `worldLastDeath` is the
+  head only, because "what just killed my partner" is a one-record question and
+  a glance is meant to cost a look, not a briefing.
 - **`/planet` clears it.** A planet entry resets `respawnCount` to 0, so a
   surviving record would both outrank every death of the new run forever and
   read as fresh to a seat comparing counts. (This closes the `lastDeath`

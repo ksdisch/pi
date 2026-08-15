@@ -130,10 +130,25 @@ whole maneuver — never busy-loop.
   next attempt at that crossing MUST be a composed move — one call carrying
   BOTH fields:
   `{"dir":"right","ms":3000,"jumpAtX":<lip minus at least 20>,"untilX":<a
-  little past where you want to come down>}`, where the lip is the `x` from
-  that record's `lastStoodAt`. Then settle, check y, and take the next gap the
-  same way. If you are about to send a bare `untilX` at a spot that has already
-  killed you by falling, stop: you are repeating the move that killed you.
+  little BEFORE where you want to come down>}`. The `untilX` goes before your
+  landing spot, not past it, for the reason spelled out further down: the run
+  keeps carrying you through the flight, so an `untilX` past where you mean to
+  land flies you over it.
+  Work the lip out like this, in order:
+  - the record HAS a `lastStoodAt` from the move you just died in
+    (`via: "move"`): that `x` is the lip — use it.
+  - the record has one but it came from the sampler (`via: "sampler"`): it is
+    the last rest of your whole LIFE and may name a spot from several moves
+    back. Only use it as the lip if it sits near where this fall started;
+    otherwise treat it as if there were none.
+  - NO usable `lastStoodAt`: do not invent one and do not skip the jump.
+    Estimate the edge from `diedAt` instead — you keep moving sideways as you
+    fall, so the edge is roughly 100-150px BEHIND `diedAt.x` — and aim your
+    margin back from that estimate. Say in your notes that the aim came from an
+    estimate, because it is a much rougher number than a real `lastStoodAt`.
+  Then settle, check y, and take the next gap the same way. If you are about to
+  send a bare `untilX` at a spot that has already killed you by falling, stop:
+  you are repeating the move that killed you.
   Random `hop` over a gap is how you fall in it.
 - LEAVE A MARGIN on that aim — this is the single easiest way to waste a power
   window. Set `jumpAtX` at least 20px BEFORE the edge you mean to leave from,

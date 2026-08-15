@@ -47,14 +47,24 @@ const JUMP_RESOLVE_MS = 240;
  */
 const SAMPLER_POLL_MS = 60;
 /**
- * How many deaths `/state` carries. One slot was not enough: `lastDeath` is
- * drained on `/state`, so across pilot 8 the sampler observed 12 deaths no
- * `/move` reported and only 3 ever reached a seat — the rest correctly rejected
- * as stale once a later death outranked them, which is the right answer to "did
- * the move I just made kill me?" and the wrong one to "what did I miss?". Five
- * is a handful a seat can read in one turn without the reply becoming a log.
+ * How many deaths `/state` carries, and it is measured rather than chosen.
+ *
+ * One slot was not enough. `lastDeath` holds only the newest record — nothing
+ * drains it, it simply gets replaced — so across pilot 8 the sampler observed 12
+ * deaths no `/move` reported and only 3 reached a seat. That is the right answer
+ * to "did the move I just made kill me?" and the wrong one to "what did I miss?".
+ *
+ * The number comes from the deepest drain actually observed. A `/state` hands
+ * over every death the sampler queued since the last look, and replaying pilot 8
+ * run A's driver ledger (57 death records) gives drains of 2, 3, 1, 6, 10 and 10.
+ * A cap below the deepest drain evicts records inside the very drain that added
+ * them, before any seat can read them: at a cap of 5, 7 of run A's 10
+ * sampler-only deaths survive to a `/state` and rc=27 — one of the two records
+ * this list exists to rescue — does not. At 10 all ten do. So the cap is the
+ * deepest drain, and a death older than ten newer ones is genuinely dropped
+ * rather than pretended about; `evicted` lines in the ledger say when.
  */
-const RECENT_DEATHS_MAX = 5;
+const RECENT_DEATHS_MAX = 10;
 
 let browser = null;
 let page = null;
@@ -136,7 +146,12 @@ function supersedes(incoming, held) {
  * An older death earns a slot only while there is room. The newest records are
  * the ones a seat can still act on, so the cap trims from the old end and a
  * death that arrives already older than everything held is dropped rather than
- * displacing something newer.
+ * displacing something newer. What the list guarantees is therefore bounded and
+ * exact: the newest RECENT_DEATHS_MAX deaths of this planet run, and nothing
+ * older. The cap is set to the deepest drain pilot 8 measured so that a realistic
+ * drain survives intact, but a busier stretch can still overflow one — and when
+ * it does the ledger logs each eviction rather than letting `listed=true` stand
+ * for a record no seat can be handed.
  *
  * The ordering key is why `/planet` clears the list: a re-entry resets
  * `respawnCount` to 0, and a surviving record from the previous life would
@@ -169,7 +184,15 @@ function recordDeath(death) {
 			// records it has not acted on yet.
 			listed = false;
 		}
-		if (recentDeaths.length > RECENT_DEATHS_MAX) recentDeaths.length = RECENT_DEATHS_MAX;
+		if (recentDeaths.length > RECENT_DEATHS_MAX) {
+			// `listed=true` is decided at insert; a later trim would silently falsify it,
+			// and the pilot channel that counts how many sampler deaths reach a seat is
+			// tallied from this ledger. Say what left, so the count can be corrected.
+			for (const gone of recentDeaths.slice(RECENT_DEATHS_MAX)) {
+				console.log(`[laptop-driver] evicted rc=${gone.respawnCount} via=${gone.via} — older than ${RECENT_DEATHS_MAX} newer records`);
+			}
+			recentDeaths.length = RECENT_DEATHS_MAX;
+		}
 	}
 	// One line per death the driver placed, into the run's driver log. Without it
 	// a pilot report can only count the deaths a seat happened to look at, which is
@@ -431,6 +454,13 @@ const routes = {
 		if (sampled?.errors) {
 			console.error(`[laptop-driver] death sampler: ${sampled.errors} error(s), last: ${sampled.lastError}`);
 		}
+		// One line per look, naming exactly what left the driver. Reach — "how many
+		// deaths actually got in front of a seat" — is a delivery question, and
+		// `listed=` cannot answer it: it is decided at insert, and a record can be
+		// evicted, or simply never looked at before the run ends. The driver cannot
+		// tell which seat is asking (the phone's world glance calls this too), so a
+		// tally that needs that reads the seat transcripts alongside these lines.
+		console.log(`[laptop-driver] state handed rc=[${recentDeaths.map((d) => d.respawnCount).join(",")}]`);
 		return { state: compact(state), lastDeath: recentDeaths[0] ?? null, recentDeaths };
 	},
 
