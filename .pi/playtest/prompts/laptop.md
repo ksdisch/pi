@@ -19,13 +19,15 @@ whole maneuver — never busy-loop.
 - Look at the world: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/state`
   Alongside the live state this returns `lastDeath` — the last death the driver
   placed: `x`/`y` where you actually were, `lastStoodAt` when it caught you
-  standing, plus `respawnCount`, `atIso`, and `via` (which watcher saw it).
-  Its `lastStoodAt` is NOT scoped the way a `/move` reply's is. A `/move` reply
-  only reports a rest from that one move; this one is the last rest of your
-  whole LIFE, so it can name a spot from an earlier move, and a surface you
-  touched too briefly to be caught resting on never appears at all. Read it as
-  "the last place I am KNOWN to have been standing", not "the last place I
-  stood". Use it whenever a move ends without reporting a death but you are
+  standing, plus `respawnCount`, `atIso`, and `via` — whose record was kept.
+  Two watchers see your deaths and only one copy is stored, and `via` is also
+  what tells you how far back `lastStoodAt` looks: on `via: "move"` it is a rest
+  from that one move, exactly like a `/move` reply's, while on `via: "sampler"`
+  it is the last rest of your whole LIFE and can name a spot from an earlier
+  move. Either way, a surface you touched too briefly to be caught resting on
+  never appears at all — so read it as "the last place I am KNOWN to have been
+  standing", not "the last place I stood".
+  Use it whenever a move ends without reporting a death but you are
   not sure you survived it: a fall that starts inside a move can finish AFTER
   the reply comes back, and that reply cannot mention a death that had not
   happened yet. Compare `lastDeath.respawnCount` with `respawnCount` in the
