@@ -252,10 +252,20 @@ render "$DIR/prompts/phone.md" >"$DIR/logs/$RUNID-prompt-phone.txt"
 
 echo "launching player sessions (run $RUNID, channel $CHANNEL)"
 echo "  laptop: $LAPTOP_MODEL   phone: $PHONE_MODEL"
-(cd "$PI_ROOT" && ./pi-test.sh -p -nc -a --model "$LAPTOP_MODEL" -n "playtest-laptop-$RUNID" \
+# A seat gets the intercom extension and nothing else. Seats run with the pi repo
+# as cwd, so extension discovery also finds the handoff extension in
+# `.pi/extensions/`, whose startup digest injected the PREVIOUS session's
+# shutdown note into a fresh seat's first turn — pilots 5, 6 and 7 recorded that
+# in every seat. It costs the seat a turn it cannot spare and it means run B's
+# laptop read run A's phone transcript, which is not the independent second run
+# a report claims when it puts two runs side by side. `-ne` turns discovery off
+# and an explicit `-e` still loads, so this subtracts the handoff extension
+# without touching what the seat actually needs.
+SEAT_EXT=(-ne -e "$PI_ROOT/.pi/extensions/intercom")
+(cd "$PI_ROOT" && ./pi-test.sh -p -nc -a "${SEAT_EXT[@]}" --model "$LAPTOP_MODEL" -n "playtest-laptop-$RUNID" \
 	"$(cat "$DIR/logs/$RUNID-prompt-laptop.txt")" </dev/null >"$DIR/logs/$RUNID-session-laptop.log" 2>&1) &
 LAPTOP_PID=$!
-(cd "$PI_ROOT" && ./pi-test.sh -p -nc -a --model "$PHONE_MODEL" -n "playtest-phone-$RUNID" \
+(cd "$PI_ROOT" && ./pi-test.sh -p -nc -a "${SEAT_EXT[@]}" --model "$PHONE_MODEL" -n "playtest-phone-$RUNID" \
 	"$(cat "$DIR/logs/$RUNID-prompt-phone.txt")" </dev/null >"$DIR/logs/$RUNID-session-phone.log" 2>&1) &
 PHONE_PID=$!
 CLEANUP_SESSIONS=1

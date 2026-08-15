@@ -33,6 +33,14 @@ whole maneuver — never busy-loop.
   happened yet. Compare `lastDeath.respawnCount` with `respawnCount` in the
   same reply — equal means this record IS your latest death, lower means you
   have died since in a way nothing could place. Never assume; check.
+  The same reply also carries `recentDeaths` — the last handful of death
+  records, newest first, with `lastDeath` as its first entry. Several deaths
+  can pile up between two looks, and `lastDeath` only ever shows you the
+  newest; the rest of the list is the ones you would otherwise never have
+  learned. Read it when you have not looked in a while, or when
+  `respawnCount` has jumped by more than one since your last look: it tells
+  you whether you keep dying the SAME way in the same place, which one death
+  cannot.
 - Move (ONE maneuver per call; stops early on death/win/reached-x):
   `curl -s -m 40 -X POST http://127.0.0.1:__LAPTOP_PORT__/move -d '{"dir":"right","ms":2500,"hop":true}'`
   Options: `dir` = "right"|"left"|"none", `ms` up to 15000, `hop` true =
@@ -57,10 +65,16 @@ whole maneuver — never busy-loop.
   edge; the `y` is the part to trust. If a death has NO `lastStoodAt`, the driver
   never caught you at rest during that move — say so rather than guessing.
   Never read distance as progress: if you died past a gap but `lastStoodAt` is
-  still at or before where you took off, you never landed on anything — you
-  overflew the far side or fell in. Only a `lastStoodAt` past the gap proves
-  you actually got across; a raised-height `lastStoodAt` means you landed on
-  something IN the gap and then left it — halfway, not across.
+  still at or before where you took off, you have no evidence you landed on
+  anything — you may have overflown the far side or fallen in, and a touch too
+  brief to catch leaves no trace either way. A `lastStoodAt` past the gap is
+  the only positive proof you got across; not having one leaves the crossing
+  unproven rather than disproven, so claim neither. A raised-height
+  `lastStoodAt` means you landed on something IN the gap and then left it —
+  halfway, not across.
+  A `lastStoodAt` on a death whose `y` says you FELL is also the trigger for
+  the crossing rule below. Read it and compose your next attempt; do not walk
+  at that spot again.
   AND if you asked for `jumpAtX`: `jump: {tookOff, pressedAt, apexY}`.
   `tookOff: false` (event "jump-ignored") means the driver never saw you leave
   the ground. Almost always that is because you were already off the ground when
@@ -108,9 +122,34 @@ whole maneuver — never busy-loop.
   anything, however far right you got — not proof you didn't, since a touch too
   brief to catch leaves no trace either way. Either reading leaves the crossing
   unproven, so don't claim it.
-- To cross a gap: run at it with `jumpAtX` set before the edge, then settle,
-  check y, and take the next gap the same way. Random `hop` over a gap is how
-  you fall in it.
+- THE CROSSING RULE — not optional, and it fires on a reply you have just read.
+  Whenever a death record in front of you says you FELL (`diedAt.y` well below
+  the height you were standing at, or a `lastStoodAt` naming a surface you then
+  left), a plain `untilX` walk CANNOT cross that spot: walking is exactly what
+  killed you there, and sending the same walk again buys another death. Your
+  next attempt at that crossing MUST be a composed move — one call carrying
+  BOTH fields:
+  `{"dir":"right","ms":3000,"jumpAtX":<lip minus at least 20>,"untilX":<a
+  little BEFORE where you want to come down>}`. The `untilX` goes before your
+  landing spot, not past it, for the reason spelled out further down: the run
+  keeps carrying you through the flight, so an `untilX` past where you mean to
+  land flies you over it.
+  Work the lip out like this, in order:
+  - the record HAS a `lastStoodAt` from the move you just died in
+    (`via: "move"`): that `x` is the lip — use it.
+  - the record has one but it came from the sampler (`via: "sampler"`): it is
+    the last rest of your whole LIFE and may name a spot from several moves
+    back. Only use it as the lip if it sits near where this fall started;
+    otherwise treat it as if there were none.
+  - NO usable `lastStoodAt`: do not invent one and do not skip the jump.
+    Estimate the edge from `diedAt` instead — you keep moving sideways as you
+    fall, so the edge is roughly 100-150px BEHIND `diedAt.x` — and aim your
+    margin back from that estimate. Say in your notes that the aim came from an
+    estimate, because it is a much rougher number than a real `lastStoodAt`.
+  Then settle, check y, and take the next gap the same way. If you are about to
+  send a bare `untilX` at a spot that has already killed you by falling, stop:
+  you are repeating the move that killed you.
+  Random `hop` over a gap is how you fall in it.
 - LEAVE A MARGIN on that aim — this is the single easiest way to waste a power
   window. Set `jumpAtX` at least 20px BEFORE the edge you mean to leave from,
   never at it. Two things push the same way: the driver checks your x every
