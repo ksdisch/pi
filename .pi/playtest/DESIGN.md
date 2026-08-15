@@ -50,7 +50,7 @@ websocket (`page.on('websocket')`) and reads the `room-created` frame.
 | `POST /boot` | Launch browser → `?test=1` (co-op, no solo) → wait for Lobby → return `{roomCode}` |
 | `POST /await-phone` | Block until the `phone-joined` frame (Hub starts) |
 | `POST /planet {id}` | `startPlanet(id)` via bridge, wait for `sceneKey==='Planet'`, return state |
-| `POST /state` | Compact `getState()` snapshot, plus `lastDeath` (see "The death sampler"). Runs off the serial command chain — it only reads the game, and the phone's world glance asks for it while this seat may be holding a 90s armed move. It does drain the sampler's queue into the driver, so a glance by either seat delivers the record to both |
+| `POST /state` | Compact `getState()` snapshot, plus `lastDeath` and `recentDeaths` (see "The death sampler"). Runs off the serial command chain — it only reads the game, and the phone's world glance asks for it while this seat may be holding a 90s armed move. It does drain the sampler's queue into the driver, so a glance by either seat delivers the record to both |
 | `POST /move {...}` | One maneuver: timed left/right, cadence `hop`, one-shot `jumpAtX` (jump at a gap's lip), optional `untilX`, hard `maxMs`; runs as a single in-page loop; returns `before` x/y, `state` after, `elapsedMs`, and events (`respawned`, `jumped`, `jump-ignored`, `won`, `reached-x`, `time-up`). A `jumpAtX` the driver reached and pressed adds `jump` (see "Jump outcomes" below); a death adds `diedAt`, and `lastStoodAt` when a rest was observed (see "Death sites"). Both follow `diedAt`'s omit-when-absent rule. Optional `arm` pre-commits the maneuver on a partner's cast (see "Armed moves" below) |
 | `POST /screenshot` | PNG into `reports/shots/` |
 | `POST /shutdown` | Close browser, exit |
@@ -175,7 +175,7 @@ walked off and landed on nothing", the exact claim the misreads got wrong.
 It observes and nothing else: no input, no scene control. A human on the couch
 watching the screen already sees every death it records.
 
-Four things about the record, stated so reports carry them:
+Five things about the record, stated so reports carry them:
 
 - **Two observers, one `lastDeath`.** The `/move` loop and the sampler both see
   a death that happens inside a move, phased up to a poll apart. `lastDeath`
@@ -194,6 +194,24 @@ Four things about the record, stated so reports carry them:
   reported in full. What the sampler *added* is therefore a different count: a
   death whose `respawnCount` appears on a `via=sampler` ledger line and on no
   `via=move` line, kept or not, which is how pilot 8's table is tallied.
+- **`recentDeaths` — the tail the single slot dropped.** `/state` returns the
+  last five records newest-first, one per `respawnCount`, with `lastDeath` as
+  the head; there is one list and `lastDeath` is a view of its first element,
+  so the two can never disagree. The head answers what a seat asks after a move
+  ("did that kill me?"), and one slot answered that correctly. The tail answers
+  the other question. A single drain can hand over several sampler deaths at
+  once, and everything but the newest used to be dropped: pilot 8 run A is the
+  case — the sampler placed rc=27 and rc=31, a later `/move` had already
+  recorded a higher count by the time anything drained them, and the seat never
+  learned either. An older death takes a slot only while there is room; the cap
+  trims from the old end, and a death arriving already older than five held
+  records is dropped rather than displacing a newer one the seat can still act
+  on. The ledger distinguishes the two: `kept=` still means "this copy is now
+  the newest record" — unchanged, so pilot tallies stay comparable — and
+  `listed=` is the separate question of whether a later `/state` can still hand
+  it over. The phone's world glance is deliberately unchanged: `worldLastDeath`
+  is the head only, because "what just killed my partner" is a one-record
+  question and a glance is meant to cost a look, not a briefing.
 - **`/planet` clears it.** A planet entry resets `respawnCount` to 0, so a
   surviving record would both outrank every death of the new run forever and
   read as fresh to a seat comparing counts. (This closes the `lastDeath`
@@ -210,7 +228,15 @@ Four things about the record, stated so reports carry them:
   previous sample to name — the death landing on the sample right after a planet
   entry — it records nothing rather than guessing, and the caller sees
   `state.respawnCount` running ahead of `lastDeath.respawnCount`. Both prompts
-  teach that comparison as the freshness check.
+  teach that comparison as the freshness check. A death tick used to open that
+  same gap for the tick after it: the sampler forgot its last sample along with
+  its surface history, so a second death arriving within a poll or two had no
+  previous position to name and went unplaced. It now keeps the sample — the
+  respawned astronaut standing at spawn is a real position of the life that just
+  started — while still dropping `lastStood` and the two heights the rest test
+  runs on, because spawn is not a ledge and two flat samples there would report
+  it as one. Pilot 8 has the class this narrows: run A's rc 33–36 cluster, four
+  deaths in which the sampler placed none and `/move` caught three.
 
 The rest test and the keep-the-previous-sample rule are deliberate copies of the
 `/move` loop's rather than a shared helper: the two run in different evaluates,
@@ -376,8 +402,17 @@ It fails soft: an unreachable or not-yet-booted laptop driver returns
 3. Start both drivers in the background; wait for their `/health`.
 4. Render the two prompt templates (`prompts/laptop.md`, `prompts/phone.md`) with
    RUNID/channel/ports; launch both sessions in parallel:
-   `./pi-test.sh -p -nc --model <model> -n playtest-<role>-<RUNID> "<prompt>"`.
+   `./pi-test.sh -p -nc -a -ne -e <intercom> --model <model> -n playtest-<role>-<RUNID> "<prompt>"`.
    (`-nc`: the pi repo's AGENTS.md is about developing pi — noise for a player.)
+   (`-ne -e <intercom>`: a seat gets the intercom extension and nothing else.
+   Seats run with the pi repo as cwd, so discovery would also load the handoff
+   extension, whose startup digest injected the previous session's shutdown note
+   into a fresh seat's first turn — reproduced in every seat across pilots 5, 6
+   and 7. It costs a turn the seat cannot spare, and it means run B's laptop had
+   read run A's phone transcript, which is not the independent second run a
+   report claims when it stands two runs beside each other. `-ne` turns
+   discovery off; an explicit `-e` still loads, so this subtracts one extension
+   rather than disabling the mechanism the seats depend on.)
 5. Babysit with a hard timeout (default 25 min); kill + report on overrun.
 6. Collect `reports/<RUNID>-laptop.md` + `reports/<RUNID>-phone.md`.
 
