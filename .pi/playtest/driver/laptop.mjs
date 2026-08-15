@@ -89,9 +89,12 @@ const snapshot = async () => compact(await requireBooted().evaluate(() => window
  * `lastDeath` only ever moves forward, keyed on `respawnCount`. Two observers
  * watch the same game — the `/move` loop and the death sampler — so the same
  * death arrives twice, phased up to a poll apart, and the later copy must not
- * quietly rewrite the earlier one. The move loop wins its own tie: its record is
- * the one already in the seat's hand from the `/move` reply, and `/state`
- * disagreeing with that reply about a single death is worse than useless.
+ * quietly rewrite the earlier one. On a tie the copy that names `lastStoodAt`
+ * wins — that is the whole question the field answers, and the two observers
+ * scope it differently; when both copies are equally informative the move's
+ * wins, being the one already in the seat's hand from the `/move` reply, and
+ * `/state` disagreeing with that reply about a single death is worse than
+ * useless.
  *
  * The ordering key is why `/planet` clears the record: a re-entry resets
  * `respawnCount` to 0, and a surviving record from the previous life would
@@ -116,8 +119,10 @@ function recordDeath(death) {
 	}
 	// One line per death the driver placed, into the run's driver log. Without it
 	// a pilot report can only count the deaths a seat happened to look at, which is
-	// not the same question as how many the sampler placed. `kept=false` is the same
-	// death arriving from the second observer — the two agreeing, not a duplicate.
+	// not the same question as how many the sampler placed. `kept=false` covers two
+	// cases a tally must not conflate: the same death arriving from the second
+	// observer (the two agreeing), and an older death rejected as stale because a
+	// later one already outranked it — pilot 8's dropped intermediate records.
 	const stood = death.lastStoodAt ? `${death.lastStoodAt.x},${death.lastStoodAt.y}` : "none";
 	console.log(
 		`[laptop-driver] death rc=${death.respawnCount} via=${death.via} at=${death.x},${death.y} stood=${stood} kept=${beatsIt}`,
@@ -333,8 +338,9 @@ const routes = {
 	//
 	// It answers for the seat's OWN deaths too, which is the point of draining the
 	// sampler here: a fall that outlived its `/move` reply reaches the seat no other
-	// way. `via` says which observer caught it — "move" for a death the reply
-	// already reported, "sampler" for one only this record has. `respawnCount` is
+	// way. `via` says whose copy survived `recordDeath`'s tie — both observers see
+	// most deaths, and a `via: "sampler"` record can be one the reply also
+	// reported, kept because it named `lastStoodAt`. `respawnCount` is
 	// how a caller tells fresh from stale: equal to `state.respawnCount` means the
 	// record IS the latest death; lower means deaths happened that nothing placed.
 	"/state": async () => {

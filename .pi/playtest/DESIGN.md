@@ -188,18 +188,24 @@ Four things about the record, stated so reports carry them:
   caught no rest and reported none, while the sampler had the astronaut standing
   on the bridge at `{800, 429}` — "fell off the bridge" and "never reached it"
   are exactly the two readings that record separates, and the naive rule threw
-  the informative copy away. `via` says which observer placed it (`"move"` or
-  `"sampler"`), which is also how a pilot report counts what the sampler added.
+  the informative copy away. `via` says whose copy survived that tie (`"move"`
+  or `"sampler"`), not who saw the death — both observers see most deaths, and
+  the tie-break can keep the sampler's copy for a death the `/move` reply also
+  reported in full. What the sampler *added* is therefore a different count: a
+  death whose `respawnCount` appears on a `via=sampler` ledger line and on no
+  `via=move` line, kept or not, which is how pilot 8's table is tallied.
 - **`/planet` clears it.** A planet entry resets `respawnCount` to 0, so a
   surviving record would both outrank every death of the new run forever and
   read as fresh to a seat comparing counts. (This closes the `lastDeath`
   freshness inversion carried as a PR #21 review follow-up; the monotonic key
   above is what turned it from a nice-to-have into a correctness requirement.)
-- **Its `lastStoodAt` is scoped to the LIFE, not to a move.** Wider than
-  `/move`'s, which is the point — and it inherits the same "stale rather than
-  absent" limit stated above, one life wide instead of one move: a life that
-  rested at the lip, cleared to a surface too briefly to register, then fell,
-  reports the lip.
+- **The sampler's `lastStoodAt` is scoped to the LIFE, not to a move.** Wider
+  than `/move`'s, which is the point — and it inherits the same "stale rather
+  than absent" limit stated above, one life wide instead of one move: a life
+  that rested at the lip, cleared to a surface too briefly to register, then
+  fell, reports the lip. Which scope `lastDeath` is carrying depends on which
+  copy won the tie above, and `via` is how a reader tells: a `"move"` copy
+  stays scoped to its one move, exactly like the `/move` reply it came from.
 - **A death it could not place is visible as a gap, not as silence.** With no
   previous sample to name — the death landing on the sample right after a planet
   entry — it records nothing rather than guessing, and the caller sees
