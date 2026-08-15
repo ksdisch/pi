@@ -281,6 +281,13 @@ CLEANUP_DRIVERS=0
 echo "stopping drivers (this also flushes the recordings)..."
 stop_drivers
 
+# The driver logs are written to fixed names, so the next run overwrites them.
+# Keep a per-run copy: the laptop driver logs one line per death it placed, and
+# that is the only record of the deaths no seat happened to look at.
+for role in laptop phone; do
+	[[ -f $DIR/logs/$role-driver.log ]] && cp "$DIR/logs/$role-driver.log" "$DIR/logs/$RUNID-$role-driver.log"
+done
+
 echo
 echo "run $RUNID finished. reports:"
 ls -la "$DIR/reports" 2>/dev/null | grep "$RUNID" || echo "  (none written — check logs/$RUNID-session-*.log)"

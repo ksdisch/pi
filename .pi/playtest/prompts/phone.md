@@ -24,7 +24,12 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   `worldLastDeath` field: `{x, y}` plus the `respawnCount` it belongs to, so you
   can tell a death that just happened from an older one. `worldLastDeath.y`
   around 476 means something on the ground got them; much larger means they
-  fell. If it's null, nobody has died yet this session.
+  fell. If it's null, nobody has died yet on this planet run.
+  It covers deaths your partner's own move never reported — a fall that finishes
+  after their maneuver has already returned, which they cannot see and you can.
+  If `worldLastDeath.respawnCount` matches `world.respawnCount`, that record is
+  their latest death; if it's lower, they have died since in a way the driver
+  could not place. Either is worth saying out loud.
   When they fell, `worldLastDeath.lastStoodAt: {x, y}` is the last place they
   were STANDING before it — what they fell off, where the death site is only
   where the fall ended. A `lastStoodAt.y` around 476 means they walked off the
