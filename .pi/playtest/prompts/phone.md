@@ -37,7 +37,11 @@ Drive the phone ONLY through this local HTTP API, via bash curl:
   platform you summoned, a ledge) and came off THAT — which is worth telling
   them, because it means they got there and then lost it. It is not always
   there: a death the driver never caught them standing before carries no
-  `lastStoodAt` at all, and then you only know where the fall ended.
+  `lastStoodAt` at all, and then you only know where the fall ended. And it is
+  the last rest of their whole LIFE, not of the move they died in — it can name
+  a spot from several moves back, and a surface they touched too briefly to be
+  caught on never appears. It says where they are KNOWN to have stood, so an
+  early-looking spot is weak evidence they never got further, not proof.
   If the laptop isn't reachable yet, `world` is null and `worldNote` says why —
   that's not an error, just no glance available.
 - Cast a power by solving its puzzle (one call runs the WHOLE puzzle and returns

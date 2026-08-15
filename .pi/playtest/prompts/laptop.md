@@ -18,9 +18,14 @@ whole maneuver — never busy-loop.
 - Enter the planet: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/planet -d '{"id":"planet-1"}'`
 - Look at the world: `curl -s -m 30 -X POST http://127.0.0.1:__LAPTOP_PORT__/state`
   Alongside the live state this returns `lastDeath` — the last death the driver
-  placed, in the same shape a `/move` death reports (`x`/`y` where you actually
-  were, `lastStoodAt` when it caught you standing, plus `respawnCount` and
-  `atIso`). Use it whenever a move ends without reporting a death but you are
+  placed: `x`/`y` where you actually were, `lastStoodAt` when it caught you
+  standing, plus `respawnCount`, `atIso`, and `via` (which watcher saw it).
+  Its `lastStoodAt` is NOT scoped the way a `/move` reply's is. A `/move` reply
+  only reports a rest from that one move; this one is the last rest of your
+  whole LIFE, so it can name a spot from an earlier move, and a surface you
+  touched too briefly to be caught resting on never appears at all. Read it as
+  "the last place I am KNOWN to have been standing", not "the last place I
+  stood". Use it whenever a move ends without reporting a death but you are
   not sure you survived it: a fall that starts inside a move can finish AFTER
   the reply comes back, and that reply cannot mention a death that had not
   happened yet. Compare `lastDeath.respawnCount` with `respawnCount` in the
@@ -96,8 +101,11 @@ whole maneuver — never busy-loop.
   reached, and the reply cannot tell you how that fall finished — it returned
   first. Never announce ground gained from such a move. Check `/state`: if
   `lastDeath.respawnCount` now matches your `respawnCount`, that move killed
-  you, and `lastDeath.lastStoodAt` says what you actually left — still at the
-  near side means you never landed on anything, however far right you got.
+  you, and `lastDeath.lastStoodAt` is the last place you are known to have been
+  standing. Still back at the near side means you have no evidence you landed on
+  anything, however far right you got — not proof you didn't, since a touch too
+  brief to catch leaves no trace either way. Either reading leaves the crossing
+  unproven, so don't claim it.
 - To cross a gap: run at it with `jumpAtX` set before the edge, then settle,
   check y, and take the next gap the same way. Random `hop` over a gap is how
   you fall in it.
@@ -112,10 +120,13 @@ whole maneuver — never busy-loop.
   attempt. Don't aim a very long way back either: too early and you may clip
   something overhead (an `apexY` much larger than your other jumps') or come
   down short.
-- A `jump-ignored` is your aim reporting itself late, NOT the level telling you
-  it does not want a jump. The fix is the same aim moved earlier, not a
-  different plan. If you keep refusing at the same number, subtract another
-  20px and go again.
+- A `jump-ignored` on a move that reported NO death is your aim reporting itself
+  late — not the level telling you it does not want a jump. The fix there is the
+  same aim moved earlier, not a different plan: if you keep refusing at the same
+  number, subtract another 20px and go again. If the move also reported a death,
+  read `diedAt` before you touch the aim — a real jump cut short at the lip
+  reports the same `jump-ignored`, and moving the aim does nothing about
+  whatever reached you.
 - A jump carries your run with it: you keep moving sideways in the air for as
   long as the move is still holding a direction, so your landing spot is
   chosen by where the run STOPS, not by where you pressed jump. To land ON
