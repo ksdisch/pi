@@ -8,31 +8,46 @@ for decision briefs.
 
 ## Active (sequenced)
 
-1. **Expose more than the newest death on `/state`** — pilot 8's follow-up to
-   the shipped death sampler. `lastDeath` is one slot, drained on `/state`, so a
-   seat that does not look promptly loses the intermediate records: across
-   pilot 8 the sampler *observed* 12 deaths no `/move` reported and only 3 ever
-   reached a seat, the rest correctly rejected as stale once a later death
-   outranked them. Candidate: a short `recentDeaths` list (a handful, newest
-   first) alongside `lastDeath`, so a seat that looks late still sees what it
-   missed. Small; the sampler already queues them. Part of the pilot 9 arc
-   (`docs/build-plans/2026-08-15-pilot-9-composition.md`).
-2. **Stop handoff-digest injection into playtest seats** — pilot 5, review
-   finding F8. The handoff extension injected run A's phone-session shutdown
-   digest into run B's laptop seat at startup: cross-run contamination that
-   cost the seat its first turn and weakens any cross-run independence claim a
-   report makes. Decide how seat sessions opt out (e.g. `run-pilot.sh`
-   launching seats with the handoff extension disabled or env-gated) and
-   implement it. Part of the pilot 9 arc (same plan doc).
-3. **Slack/Telegram loop-in at decision points** — design pass ran 2026-08-15
+1. **Teach the seat where the lip IS, not just to jump** — pilot 9 finding 2,
+   the successor to the composition item the trigger-bound rule half-closed.
+   The rule converted run A completely (9 `jumpAtX` calls in 14 moves, 4
+   take-offs from 4 presses, a clear) and did not convert run B, which issued
+   one composed move in 62 and aimed it 64–72px PAST the lip its own records
+   supported at that moment (`lastStoodAt` 648–656 across rc=4/7/9/10/11) — so
+   the residual failure is no longer "never retrieves the option" but "retrieves
+   it and mis-parameterises it". Two concrete pieces: PR #37 review F11 (the
+   sampler-scope check reads "sits near where this fall started", which is
+   circular — the drafted replacement is "within ~150px of `diedAt.x` on the
+   side you came from"), and a check on the aim itself, since a `jumpAtX` past
+   the most recent fall's `lastStoodAt` is refusable before it is sent. Prompt
+   work; next pilot's headline change.
+2. **A seat killed by the ceiling never writes its report** — pilot 7 finding 6,
+   now the binding constraint rather than a footnote. Surviving 429s (PR #30)
+   means a seat no longer dies of rate limits: pilot 9 run B lived 34m46s and
+   358 records and was still playing when `PILOT_TIMEOUT_S` killed it, so
+   neither of its seats wrote a report and the pilot's critique deliverable was
+   half of pilot 8's. Ten seats across nine pilots, none has ever written one on
+   a 429 or ceiling ending. Candidate: the orchestrator warns the seats over
+   intercom at T-minus-N and only then hard-kills, or SIGTERMs with a grace
+   window the prompt teaches as "write now". Notes files do survive, so this
+   buys the report, not the observations.
+3. **The driver ledger cannot see a sampler death nothing drained** — pilot 9
+   finding 7. Sampler coverage is only measurable over the deaths some `/state`
+   drained: run B's last 32 deaths are unmeasurable because the seat stopped
+   looking and the run was then killed. Pilot 8's coverage table has the same
+   conditioning and never showed it. Candidate: drain the sampler at
+   `/shutdown` (or log the queue depth there) so a run's coverage figure covers
+   the whole run instead of its drained prefix. Small; makes every future
+   sampler number honest without a caveat paragraph.
+4. **Slack/Telegram loop-in at decision points** — design pass ran 2026-08-15
    (`docs/build-plans/2026-08-15-slack-loop-in.md`, PR #35): bridge the
    intercom's `kyle` channel to Telegram v1, Slack as a later port. Remaining:
    Telegram credentials (Kyle-action, named in the doc), then the build.
-4. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
+5. **Repo-scoped event ledger** — underspecified; needs design-first. Seed is
    the dated `.pi/handoffs/` history.
-5. **Walk-up note detection / cross-cwd routing** — small; no observed pain
+6. **Walk-up note detection / cross-cwd routing** — small; no observed pain
    yet (all fork work happens at repo root).
-6. **Playtest harness review follow-ups** — nice-to-haves, none blocking.
+7. **Playtest harness review follow-ups** — nice-to-haves, none blocking.
    Three from PR #21's adversarial review: mid-boot `/state` should guard on
    `booted` rather than `page` so a glance reports "laptop not ready" instead
    of a raw TypeError (F5 — the raw-TypeError half has since softened to a
@@ -59,7 +74,20 @@ for decision briefs.
    prefix-matches, so a future pi-tui subpath import dies at runtime (F3);
    the handoff extension's sibling config carries the identical trap behind a
    comment that reads as a guarantee (F4).
-7. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
+   From PR #37's (pilot 9; F1/F2/F3/F4 fixed in that PR): the crossing rule has
+   no platform carve-out, stated absolutely and keyed to a location rather than
+   to `platformCount` (F5 — judge upheld nice-to-have and showed the obvious
+   carve-out would be WRONG, since a summoned platform is raised rather than
+   flush, so read the ruling before acting on it); `-ne -e <intercom>` subtracts
+   five discovered extensions while the `run-pilot.sh` comment and DESIGN both
+   say one (F6); the `RECENT_DEATHS_MAX` docblock's "drained on `/state`" claim
+   (F7, text already gone, finding recorded); `/state` returns the live
+   `recentDeaths` array by reference beside a separately captured `lastDeath`,
+   a narrow within-reply race a `.slice()` closes (F8); the `/state` route
+   comment still asserts the invariant DESIGN retracted in the same commit (F9);
+   the `state handed rc=[…]` reach line counts phone glances, which discard
+   `recentDeaths`, with no caller marker (F10). F11 rides Active item 1.
+8. **Report a trigger's remaining life alongside `arm-fired`** — pilot 4
    finding 5. Both `/move` arm triggers fire on the *level*, so an arm placed
    against an already-running 3s freeze fires in 61ms and reads to the seat as
    "the window is open" when it is closing; two run-B deaths followed within
@@ -71,7 +99,7 @@ for decision briefs.
    across both runs, and all five died —
    after a run's first platform cast, "arm on platform" is permanently instant
    and expresses no coordination.
-8. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
+9. **Post the `newSession()` Contribution Proposal upstream** — Kyle-action
    (~5 min): draft ready in `docs/upstream/newsession-on-extension-context.md`,
    branch `feat/expose-newsession-to-events` pushed, not yet posted. PR #32
    review F2 — the Cloudflare compat test's pin to a volatile,
@@ -80,6 +108,34 @@ for decision briefs.
 
 ## Shipped
 
+- **Co-op pilot 9 — composition, half converted** (2026-08-15, PR #37) — the
+  composition experiment, and with it the former Active items "expose more than
+  the newest death on `/state`" and "stop handoff-digest injection into playtest
+  seats". **Run A cleared planet-1** (`won: true` at x=892, rc 8, 7m23s) — the
+  second clear in nine pilots — and it is the seat role that issued **zero**
+  `jumpAtX` in both pilot 7 and pilot 8 (zero in 60 calls in pilot 8 run A
+  alone): with the trigger-bound crossing rule it issued **9 in 14 moves and
+  took off on 4 of 4 presses**, aiming `jumpAtX: 624` off a lip of 644 that a
+  *sampler-only* death supplied, then clearing from the bridge at
+  `jumpAtX: 816`. Run B did not convert — 1 composed move in 62, aimed 64–72px
+  PAST the lip its records supported, refused (`jump-ignored`, pressed at y=514
+  already falling) — so the
+  rate is still 1 of 2 and the residual failure changed shape from "never
+  retrieves the option" to "mis-parameterises it" (new Active item 1).
+  `recentDeaths` measured clean: **7 of 7 sampler-only deaths reached a seat**
+  against pilot 8's 3 of 12, with a ledger line showing a non-newest death
+  (`rc=15 kept=false listed=true`) delivered where one slot dropped it. The
+  sampler placed **25 of 25** deaths in the measurable window with none seen by
+  neither (pilot 8: 39/43 and 1) — small sample, and run B's 32-death tail is
+  excluded because nothing drained it (new Active item 3). Digest contamination
+  is **zero across all four seats**, where pilots 5–7 reproduced it in every
+  one. 429s no longer end runs at all: run B's laptop survived 21 and was still
+  playing when the 2100s ceiling killed it — which is why neither of its seats
+  wrote a report (new Active item 2). The adversarial review paid for itself
+  twice: it caught that the shipped 5-slot cap evicted records *inside the drain
+  that added them* (the cap is now 10, the deepest drain pilot 8's ledger
+  contains) and that the `listed=` flag would have over-reported the very reach
+  number this pilot publishes. See `.pi/playtest/PILOT-2026-08-15-run9.md`.
 - **Co-op pilot 8 — the planet fell** (2026-08-14) — the aim-margin experiment,
   and with it the former Active item "capture deaths that complete between
   moves". **Run B cleared planet-1** (`won: true` at x=892, rc 7, 7m46s), the
